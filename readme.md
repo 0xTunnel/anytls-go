@@ -43,6 +43,23 @@ log_file_dir = "/etc/anytls/log"
 
 其中 `Config.log_file_dir` 为可选项；设置后，服务端会同时输出到标准输出和该目录下的 `anytls-server.log`。
 
+### 日志说明
+
+当前服务端日志统一使用 `debug`、`info`、`warn`、`error` 四个等级：
+
+- `debug`：联调用细节，例如 fallback、目标地址读取失败、padding 协商、上报成功等。
+- `info`：状态变化和里程碑事件，例如服务启动、监听成功、节点快照同步成功、正常停机等。
+- `warn`：请求级异常但服务仍继续，例如设备数超限、客户端未先发 settings、出站拨号失败、收到客户端 alert 等。
+- `error`：服务级失败或明显异常，例如快照为空、同步/上报失败、不可恢复的监听错误、panic 恢复等。
+
+日志会尽量带上这些字段，便于服务器筛查：
+
+- `component`：日志来源模块，例如 `server`、`node`、`runtime`、`inbound`、`outbound`、`session`
+- `event`：固定事件名，例如 `startup`、`sync_snapshot`、`device_reject`、`dial_failed`
+- `user_id`、`remote_ip`、`target`：按场景补充的排障字段
+
+服务器联调阶段建议将 `log_level` 设为 `debug`；稳定运行后建议切回 `info`。
+
 ### 示例启动
 
 ```

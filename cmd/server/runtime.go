@@ -61,7 +61,7 @@ func (r *serverRuntime) Serve(ctx context.Context) error {
 				return nil
 			}
 			if shouldRetryAccept(err) {
-				logrus.Errorln("accept:", err)
+				eventLogger("runtime", logrus.Fields{"retry_delay": retryDelay.String()}, "accept_retryable_error").WithError(err).Warn("accept failed with retryable error")
 				if !waitForNextTick(ctx, retryDelay) {
 					return nil
 				}
@@ -95,7 +95,7 @@ func (r *serverRuntime) Shutdown(ctx context.Context) error {
 	r.shutdownOnce.Do(func() {
 		if r.listener != nil {
 			if err := r.listener.Close(); err != nil && !isListenerClosedError(err) {
-				logrus.Debugln("close listener:", err)
+				eventLogger("runtime", nil, "close_listener_failed").WithError(err).Debug("close listener returned error")
 			}
 		}
 		for _, conn := range r.snapshotActiveConns() {

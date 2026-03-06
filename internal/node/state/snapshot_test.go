@@ -15,8 +15,10 @@ func TestBuildSnapshotCreatesAuthIndex(t *testing.T) {
 		},
 		Protocol: "anytls",
 		Config: ppanel.AnyTLSConfig{
-			Port:          443,
-			PaddingScheme: "stop=1",
+			Port: 443,
+			SecurityConfig: &ppanel.SecurityConfig{
+				PaddingScheme: "stop=1",
+			},
 		},
 	}
 	users := []ppanel.ServerUser{
@@ -33,6 +35,9 @@ func TestBuildSnapshotCreatesAuthIndex(t *testing.T) {
 	}
 	if snapshot.PushInterval != 60*time.Second {
 		t.Fatalf("unexpected push interval: %v", snapshot.PushInterval)
+	}
+	if snapshot.PaddingScheme != "stop=1" {
+		t.Fatalf("unexpected padding scheme: %q", snapshot.PaddingScheme)
 	}
 	sum := sha256.Sum256([]byte("uuid-1"))
 	user, ok := snapshot.UsersByHash[sum]
@@ -56,5 +61,43 @@ func TestBuildSnapshotRejectsDuplicateAuthHash(t *testing.T) {
 	_, err := BuildSnapshot(config, []ppanel.ServerUser{{ID: 1, UUID: "same"}, {ID: 2, UUID: "same"}})
 	if err == nil {
 		t.Fatal("BuildSnapshot() expected duplicate auth hash error")
+	}
+}
+
+func TestBuildSnapshotUsesNestedPaddingScheme(t *testing.T) {
+	config := &ppanel.ServerConfigResponse{
+		Protocol: "anytls",
+		Config: ppanel.AnyTLSConfig{
+			Port: 1110,
+			SecurityConfig: &ppanel.SecurityConfig{
+				PaddingScheme: "stop=1",
+			},
+		},
+	}
+
+	snapshot, err := BuildSnapshot(config, []ppanel.ServerUser{{ID: 1, UUID: "uuid-1"}})
+	if err != nil {
+		t.Fatalf("BuildSnapshot() error = %v", err)
+	}
+	if snapshot.PaddingScheme != "stop=1" {
+		t.Fatalf("BuildSnapshot() padding scheme = %q, want %q", snapshot.PaddingScheme, "stop=1")
+	}
+}
+
+func TestBuildSnapshotIgnoresTopLevelPaddingScheme(t *testing.T) {
+	config := &ppanel.ServerConfigResponse{
+		Protocol: "anytls",
+		Config: ppanel.AnyTLSConfig{
+			Port:          1110,
+			PaddingScheme: "top-level-should-be-ignored",
+		},
+	}
+
+	snapshot, err := BuildSnapshot(config, []ppanel.ServerUser{{ID: 1, UUID: "uuid-1"}})
+	if err != nil {
+		t.Fatalf("BuildSnapshot() error = %v", err)
+	}
+	if snapshot.PaddingScheme != "" {
+		t.Fatalf("BuildSnapshot() padding scheme = %q, want empty string", snapshot.PaddingScheme)
 	}
 }

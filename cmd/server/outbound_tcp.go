@@ -16,7 +16,7 @@ import (
 func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksaddr) error {
 	c, err := proxy.SystemDialer.DialContext(ctx, "tcp", destination.String())
 	if err != nil {
-		logrus.Debugln("proxyOutboundTCP DialContext:", err)
+		eventLogger("outbound", logrus.Fields{"target": destination.String(), "transport": "tcp"}, "dial_failed").WithError(err).Warn("outbound dial failed")
 		err = E.Errors(err, N.ReportHandshakeFailure(conn, err))
 		return err
 	}
@@ -33,13 +33,13 @@ func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksadd
 func proxyOutboundUoT(ctx context.Context, conn net.Conn, destination M.Socksaddr) error {
 	request, err := uot.ReadRequest(conn)
 	if err != nil {
-		logrus.Debugln("proxyOutboundUoT ReadRequest:", err)
+		eventLogger("outbound", logrus.Fields{"target": destination.String(), "transport": "udp-over-tcp"}, "read_request_failed").WithError(err).Warn("read udp-over-tcp request failed")
 		return err
 	}
 
 	c, err := net.ListenPacket("udp", "")
 	if err != nil {
-		logrus.Debugln("proxyOutboundUoT ListenPacket:", err)
+		eventLogger("outbound", logrus.Fields{"target": destination.String(), "transport": "udp-over-tcp"}, "listen_packet_failed").WithError(err).Error("create udp packet listener failed")
 		err = E.Errors(err, N.ReportHandshakeFailure(conn, err))
 		return err
 	}

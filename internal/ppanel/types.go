@@ -1,6 +1,9 @@
 package ppanel
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type ResponseEnvelope[T any] struct {
 	Code int    `json:"code"`
@@ -17,12 +20,20 @@ type SecurityConfig struct {
 	SNI           string `json:"sni"`
 	AllowInsecure bool   `json:"allow_insecure"`
 	Fingerprint   string `json:"fingerprint"`
+	PaddingScheme string `json:"padding_scheme"`
 }
 
 type AnyTLSConfig struct {
 	Port           int             `json:"port"`
 	PaddingScheme  string          `json:"padding_scheme"`
 	SecurityConfig *SecurityConfig `json:"security_config,omitempty"`
+}
+
+func (c AnyTLSConfig) EffectivePaddingScheme() string {
+	if c.SecurityConfig == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.SecurityConfig.PaddingScheme)
 }
 
 type ServerConfigResponse struct {

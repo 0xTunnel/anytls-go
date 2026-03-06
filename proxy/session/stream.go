@@ -112,6 +112,13 @@ func (s *Stream) SetDeadline(t time.Time) error {
 	return s.SetReadDeadline(t)
 }
 
+func (s *Stream) StreamID() uint32 {
+	if s == nil {
+		return 0
+	}
+	return s.id
+}
+
 // LocalAddr satisfies net.Conn interface
 func (s *Stream) LocalAddr() net.Addr {
 	if ts, ok := s.sess.conn.(interface {

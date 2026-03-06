@@ -28,17 +28,21 @@ func main() {
 	flag.Parse()
 
 	if *configPath == "" {
-		logrus.Fatalln("please set -c node toml file")
+		eventLogger("server", nil, "missing_config_path").Fatal("please set -c node toml file")
 	}
 
 	nodeConfig, err := config.LoadNodeConfig(*configPath)
 	if err != nil {
-		logrus.Fatalln("load node config:", err)
+		eventLogger("server", nil, "load_config_failed").WithError(err).Fatal("load node config failed")
 	}
+	eventLogger("server", logrus.Fields{
+		"config_path": nodeConfig.Path,
+		"node_id":     nodeConfig.ServerID,
+	}, "load_config").Info("node config loaded")
 
 	logFile, err := configureLogging(nodeConfig)
 	if err != nil {
-		logrus.Fatalln("configure logging:", err)
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "configure_logging_failed").WithError(err).Fatal("configure logging failed")
 	}
 	if logFile != nil {
 		defer logFile.Close()
@@ -46,13 +50,13 @@ func main() {
 
 	logLevel, err := logrus.ParseLevel(resolveLogLevel(nodeConfig.LogLevel))
 	if err != nil {
-		logrus.Fatalln("parse log level:", err)
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID, "log_level": nodeConfig.LogLevel}, "parse_log_level_failed").WithError(err).Fatal("parse log level failed")
 	}
 	logrus.SetLevel(logLevel)
 
 	tlsCert, err := tls.LoadX509KeyPair(nodeConfig.TLSCertFile, nodeConfig.TLSKeyFile)
 	if err != nil {
-		logrus.Fatalln("load tls certificate:", err)
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "load_tls_cert_failed").WithError(err).Fatal("load tls certificate failed")
 	}
 	tlsConfig := &tls.Config{
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -65,21 +69,33 @@ func main() {
 
 	client, err := ppanel.NewClient(nodeConfig.PanelURL, nodeConfig.ServerID, nodeConfig.SecretKey)
 	if err != nil {
-		logrus.Fatalln("create ppanel client:", err)
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "create_panel_client_failed").WithError(err).Fatal("create panel client failed")
 	}
 	snapshot, err := fetchNodeSnapshot(ctx, client)
 	if err != nil {
-		logrus.Fatalln("fetch node snapshot:", err)
+		eventLogger("node", logrus.Fields{"node_id": nodeConfig.ServerID}, "initial_snapshot_failed").WithError(err).Fatal("fetch initial node snapshot failed")
 	}
+	eventLogger("node", logrus.Fields{
+		"node_id":       nodeConfig.ServerID,
+		"user_count":    len(snapshot.UsersByID),
+		"port":          snapshot.Port,
+		"pull_interval": snapshot.PullInterval.String(),
+		"push_interval": snapshot.PushInterval.String(),
+	}, "initial_snapshot").Info("initial node snapshot loaded")
 	listenAddr := resolveListenAddr("", snapshot.Port)
 	server := NewNodeServer(tlsConfig, state.NewStore(snapshot), state.NewDeviceTracker(), state.NewTrafficAggregator(), client)
 
-	logrus.Infoln("[Server]", util.ProgramVersionName)
-	logrus.Infoln("[Server] Listening TCP", listenAddr)
+	eventLogger("server", logrus.Fields{
+		"node_id":     nodeConfig.ServerID,
+		"listen_addr": listenAddr,
+		"log_level":   logLevel.String(),
+		"transport":   "tcp+tls",
+		"version":     util.ProgramVersionName,
+	}, "startup").Info("server initialized")
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		logrus.Fatalln("listen server tcp:", err)
+		eventLogger("server", logrus.Fields{"listen_addr": listenAddr, "node_id": nodeConfig.ServerID}, "listen_failed").WithError(err).Fatal("listen server tcp failed")
 	}
 
 	runtime := newServerRuntime(server, listener)
@@ -95,11 +111,11 @@ func main() {
 
 	select {
 	case <-ctx.Done():
-		logrus.Infoln("[Server] shutdown signal received")
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "shutdown_signal").Info("shutdown signal received")
 	case serveErr = <-serveErrCh:
 		serveReturned = true
 		if serveErr != nil {
-			logrus.Errorln("serve:", serveErr)
+			eventLogger("runtime", logrus.Fields{"node_id": nodeConfig.ServerID}, "serve_failed").WithError(serveErr).Error("serve returned with error")
 		}
 		stop()
 	}
@@ -107,15 +123,17 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := runtime.Shutdown(shutdownCtx); err != nil {
-		logrus.Errorln("shutdown:", err)
+		eventLogger("runtime", logrus.Fields{"node_id": nodeConfig.ServerID}, "shutdown_failed").WithError(err).Error("shutdown failed")
 	}
 
 	if !serveReturned {
 		serveErr = <-serveErrCh
 	}
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
-		logrus.Fatalln("server stopped with error:", serveErr)
+		eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "stopped_with_error").WithError(serveErr).Fatal("server stopped with error")
 	}
+
+	eventLogger("server", logrus.Fields{"node_id": nodeConfig.ServerID}, "shutdown_complete").Info("server stopped cleanly")
 }
 
 func resolveLogLevel(level string) string {
@@ -129,6 +147,10 @@ func resolveLogLevel(level string) string {
 }
 
 func configureLogging(nodeConfig *config.NodeConfig) (*os.File, error) {
+	logrus.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		DisableColors: true,
+	})
 	if nodeConfig == nil || nodeConfig.LogFileDir == "" {
 		return nil, nil
 	}

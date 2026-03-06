@@ -21,9 +21,19 @@ import (
 )
 
 func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
+	remoteAddr := ""
+	remoteIP := ""
+	if c != nil && c.RemoteAddr() != nil {
+		remoteAddr = c.RemoteAddr().String()
+		remoteIP = remoteIPFromAddr(c.RemoteAddr())
+	}
+	entry := eventLogger("inbound", logrus.Fields{
+		"remote_addr": remoteAddr,
+		"remote_ip":   remoteIP,
+	}, "connection_started")
 	defer func() {
 		if r := recover(); r != nil {
-			logrus.Errorln("[BUG]", r, string(debug.Stack()))
+			entry.WithField("event", "panic").WithField("panic", r).Errorln(string(debug.Stack()))
 		}
 	}()
 
@@ -35,7 +45,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 
 	n, err := b.ReadOnceFrom(c)
 	if err != nil {
-		logrus.Debugln("ReadOnceFrom:", err)
+		entry.WithField("event", "initial_read_failed").WithError(err).Debug("failed to read initial payload")
 		return
 	}
 	c = bufio.NewCachedConn(c, b)
@@ -43,7 +53,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 	authHash, err := b.ReadBytes(32)
 	if err != nil {
 		b.Resize(0, n)
-		fallback(ctx, c)
+		fallback(ctx, c, entry, "missing_auth_hash")
 		return
 	}
 	var userID int64
@@ -59,29 +69,30 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 	if s.IsNodeMode() {
 		snapshot := s.snapshotStore.Load()
 		if snapshot == nil {
-			logrus.Errorln("node snapshot is empty")
+			entry.WithField("event", "missing_snapshot").Error("node snapshot is empty")
 			b.Resize(0, n)
-			fallback(ctx, c)
+			fallback(ctx, c, entry, "missing_snapshot")
 			return
 		}
 		user, ok := snapshot.LookupAuthHash(authHash)
 		if !ok {
 			b.Resize(0, n)
-			fallback(ctx, c)
+			fallback(ctx, c, entry, "auth_not_matched")
 			return
 		}
-		remoteIP := remoteIPFromAddr(c.RemoteAddr())
 		if err := s.deviceTracker.Acquire(user.ID, remoteIP, user.DeviceLimit); err != nil {
+			rejectEntry := entry.WithFields(logrus.Fields{"user_id": user.ID, "device_limit": user.DeviceLimit})
 			if errors.Is(err, state.ErrDeviceLimitExceeded) {
-				logrus.Warnf("reject user %d from %s: device limit exceeded", user.ID, remoteIP)
+				rejectEntry.WithField("event", "device_reject").Warn("device limit exceeded")
 			} else {
-				logrus.Warnf("reject user %d from %s: %v", user.ID, remoteIP, err)
+				rejectEntry.WithField("event", "device_reject").WithError(err).Warn("reject user due to tracker error")
 			}
 			b.Resize(0, n)
-			fallback(ctx, c)
+			fallback(ctx, c, rejectEntry, "device_reject")
 			return
 		}
 		userID = user.ID
+		entry = entry.WithField("user_id", user.ID)
 		release = func() {
 			s.deviceTracker.Release(user.ID, remoteIP)
 		}
@@ -89,7 +100,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 	by, err := b.ReadBytes(2)
 	if err != nil {
 		b.Resize(0, n)
-		fallback(ctx, c)
+		fallback(ctx, c, entry, "missing_padding_length")
 		return
 	}
 	paddingLen := binary.BigEndian.Uint16(by)
@@ -97,7 +108,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		_, err = b.ReadBytes(int(paddingLen))
 		if err != nil {
 			b.Resize(0, n)
-			fallback(ctx, c)
+			fallback(ctx, c, entry, "invalid_padding")
 			return
 		}
 	}
@@ -105,14 +116,14 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 	session := session.NewServerSession(c, func(stream *session.Stream) {
 		defer func() {
 			if r := recover(); r != nil {
-				logrus.Errorln("[BUG]", r, string(debug.Stack()))
+				entry.WithFields(logrus.Fields{"event": "panic", "stream_id": stream.StreamID(), "panic": r}).Errorln(string(debug.Stack()))
 			}
 		}()
 		defer stream.Close()
 
 		destination, err := M.SocksaddrSerializer.ReadAddrPort(stream)
 		if err != nil {
-			logrus.Debugln("ReadAddrPort:", err)
+			entry.WithFields(logrus.Fields{"event": "read_target_failed", "stream_id": stream.StreamID()}).WithError(err).Debug("failed to read target address")
 			return
 		}
 
@@ -147,7 +158,15 @@ func remoteIPFromAddr(addr net.Addr) string {
 	return host
 }
 
-func fallback(ctx context.Context, c net.Conn) {
+func fallback(ctx context.Context, c net.Conn, entry *logrus.Entry, reason string) {
 	// 暂未实现
-	logrus.Debugln("fallback:", fmt.Sprint(c.RemoteAddr()))
+	fields := logrus.Fields{"reason": reason}
+	if c != nil && c.RemoteAddr() != nil {
+		fields["remote_addr"] = fmt.Sprint(c.RemoteAddr())
+	}
+	if entry != nil {
+		entry.WithFields(fields).WithField("event", "fallback").Debug("fallback handler invoked")
+		return
+	}
+	eventLogger("inbound", fields, "fallback").Debug("fallback handler invoked")
 }

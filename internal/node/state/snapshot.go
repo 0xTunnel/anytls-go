@@ -53,7 +53,7 @@ func BuildSnapshot(config *ppanel.ServerConfigResponse, users []ppanel.ServerUse
 		Port:          config.Config.Port,
 		PullInterval:  durationFromSeconds(config.Basic.PullInterval, defaultPullInterval),
 		PushInterval:  durationFromSeconds(config.Basic.PushInterval, defaultPushInterval),
-		PaddingScheme: strings.TrimSpace(config.Config.PaddingScheme),
+		PaddingScheme: config.Config.EffectivePaddingScheme(),
 		UsersByHash:   make(map[[32]byte]User, len(users)),
 		UsersByID:     make(map[int64]User, len(users)),
 	}

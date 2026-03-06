@@ -16,6 +16,25 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+func (s *Session) logger(event string, fields logrus.Fields) *logrus.Entry {
+	entryFields := logrus.Fields{
+		"component": "session",
+		"event":     event,
+	}
+	if s != nil {
+		if s.userID > 0 {
+			entryFields["user_id"] = s.userID
+		}
+		if s.conn != nil && s.conn.RemoteAddr() != nil {
+			entryFields["remote_addr"] = s.conn.RemoteAddr().String()
+		}
+	}
+	for key, value := range fields {
+		entryFields[key] = value
+	}
+	return logrus.WithFields(entryFields)
+}
+
 type Session struct {
 	conn     net.Conn
 	connLock sync.Mutex
@@ -112,7 +131,7 @@ func (s *Session) Close() error {
 func (s *Session) recvLoop() error {
 	defer func() {
 		if r := recover(); r != nil {
-			logrus.Errorln("[BUG]", r, string(debug.Stack()))
+			s.logger("panic", logrus.Fields{"panic": r}).Errorln(string(debug.Stack()))
 		}
 	}()
 	defer s.Close()
@@ -151,6 +170,7 @@ func (s *Session) recvLoop() error {
 			buf.Put(buffer)
 		case cmdSYN:
 			if !receivedSettingsFromClient {
+				s.logger("protocol_violation", logrus.Fields{"reason": "missing_settings", "stream_id": sid}).Warn("client opened stream before sending settings")
 				f := newFrame(cmdAlert, 0)
 				f.data = []byte("client did not send its settings")
 				s.writeControlFrame(f)
@@ -204,6 +224,7 @@ func (s *Session) recvLoop() error {
 			m := util.StringMapFromBytes(buffer)
 			paddingF := s.padding.Load()
 			if m["padding-md5"] != paddingF.Md5 {
+				s.logger("update_padding_scheme", nil).Debug("client padding scheme differs, sending update")
 				f := newFrame(cmdUpdatePaddingScheme, 0)
 				f.data = paddingF.RawScheme
 				if _, err := s.writeControlFrame(f); err != nil {
@@ -213,6 +234,7 @@ func (s *Session) recvLoop() error {
 			}
 			if v, err := strconv.Atoi(m["v"]); err == nil && v >= 2 {
 				s.peerVersion = byte(v)
+				s.logger("peer_version_negotiated", logrus.Fields{"peer_version": v}).Debug("negotiated peer protocol version")
 				f := newFrame(cmdServerSettings, 0)
 				f.data = util.StringMap{"v": "2"}.ToBytes()
 				if _, err := s.writeControlFrame(f); err != nil {
@@ -227,7 +249,7 @@ func (s *Session) recvLoop() error {
 				buf.Put(buffer)
 				return err
 			}
-			logrus.Errorln("[Alert]", string(buffer))
+			s.logger("protocol_alert", logrus.Fields{"message": string(buffer)}).Warn("received alert from peer")
 			buf.Put(buffer)
 			return nil
 		case cmdUpdatePaddingScheme, cmdSYNACK, cmdServerSettings:
