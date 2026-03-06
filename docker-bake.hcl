@@ -5,7 +5,10 @@ group "default" {
 target "_common" {
   context    = "."
   dockerfile = "Dockerfile"
+  cache-from = ["type=local,src=.buildx-cache"]
+  cache-to   = ["type=local,dest=.buildx-cache,mode=max"]
   args = {
+    BASE_IMAGE_PREFIX = "docker.io/library"
     GO_VERSION     = "1.24"
     ALPINE_VERSION = "3.21"
   }

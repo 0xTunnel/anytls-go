@@ -7,4 +7,5 @@
 *.zip
 .vscode
 logs*
+.buildx-cache
 .DS_Store

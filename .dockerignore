@@ -1,8 +1,11 @@
 .git
 .github
 .vscode
+.DS_Store
 dist
 anytls-server
+server
+server.test
 *.exe
 *.zip
 node.toml
@@ -10,3 +13,7 @@ cert.pem
 key.pem
 log/
 *.log
+logs_*
+docs
+example
+.buildx-cache

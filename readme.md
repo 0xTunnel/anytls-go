@@ -32,7 +32,7 @@
 
 ## 配置文件
 
-示例配置见 [node.example.toml](node.example.toml)。
+示例配置见 [example/node.toml](example/node.toml)。
 
 当前使用如下 TOML 结构：
 
@@ -100,14 +100,26 @@ go test -race ./...
 
 ## Docker
 
-仓库包含 [Dockerfile](Dockerfile)、[compose.yaml](compose.yaml) 和 [docker-bake.hcl](docker-bake.hcl)。
+仓库包含 [Dockerfile](Dockerfile)、[example/compose.yaml](example/compose.yaml) 和 [docker-bake.hcl](docker-bake.hcl)。
 
 常见用法：
 
 ```bash
-cp node.example.toml node.toml
+cp example/node.toml node.toml
 mkdir -p log
-docker compose up -d
+docker compose -f example/compose.yaml up -d
+```
+
+如果本地访问 Docker Hub 不稳定，可以在构建时覆盖基础镜像源前缀：
+
+```bash
+docker buildx bake image-local --set '*.args.BASE_IMAGE_PREFIX=<your-mirror>/library'
+```
+
+如果需要清理本地 buildx 缓存，可以执行：
+
+```bash
+rm -rf .buildx-cache
 ```
 
 ## 相关文档
