@@ -1,6 +1,6 @@
 /dist
-/cmd/client/client
 /cmd/server/server
+/anytls-server
 *.exe
 *.zip
 .vscode

@@ -1,0 +1,12 @@
+[Panel]
+webapi_url = "https://api.ppanel.dev"
+webapi_key = "1234567890"
+node_id = 1
+
+[TLS]
+cert_file = "/etc/anytls/cert.pem"
+key_file = "/etc/anytls/key.pem"
+
+[Config]
+log_level = "info"
+log_file_dir = "/etc/anytls/log"

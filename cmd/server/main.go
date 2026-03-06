@@ -1,80 +1,145 @@
 package main
 
 import (
-	"anytls/proxy/padding"
+	"anytls/internal/config"
+	"anytls/internal/node/state"
+	"anytls/internal/ppanel"
 	"anytls/util"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-var passwordSha256 []byte
+const shutdownTimeout = 10 * time.Second
 
 func main() {
-	listen := flag.String("l", "0.0.0.0:8443", "server listen port")
-	password := flag.String("p", "", "password")
-	paddingScheme := flag.String("padding-scheme", "", "padding-scheme")
+	configPath := flag.String("c", "", "path to node toml file")
 	flag.Parse()
 
-	if *password == "" {
-		logrus.Fatalln("please set password")
-	}
-	if *paddingScheme != "" {
-		if f, err := os.Open(*paddingScheme); err == nil {
-			b, err := io.ReadAll(f)
-			if err != nil {
-				logrus.Fatalln(err)
-			}
-			if padding.UpdatePaddingScheme(b) {
-				logrus.Infoln("loaded padding scheme file:", *paddingScheme)
-			} else {
-				logrus.Errorln("wrong format padding scheme file:", *paddingScheme)
-			}
-			f.Close()
-		} else {
-			logrus.Fatalln(err)
-		}
+	if *configPath == "" {
+		logrus.Fatalln("please set -c node toml file")
 	}
 
-	logLevel, err := logrus.ParseLevel(os.Getenv("LOG_LEVEL"))
+	nodeConfig, err := config.LoadNodeConfig(*configPath)
 	if err != nil {
-		logLevel = logrus.InfoLevel
+		logrus.Fatalln("load node config:", err)
+	}
+
+	logFile, err := configureLogging(nodeConfig)
+	if err != nil {
+		logrus.Fatalln("configure logging:", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
+	logLevel, err := logrus.ParseLevel(resolveLogLevel(nodeConfig.LogLevel))
+	if err != nil {
+		logrus.Fatalln("parse log level:", err)
 	}
 	logrus.SetLevel(logLevel)
 
-	var sum = sha256.Sum256([]byte(*password))
-	passwordSha256 = sum[:]
+	tlsCert, err := tls.LoadX509KeyPair(nodeConfig.TLSCertFile, nodeConfig.TLSKeyFile)
+	if err != nil {
+		logrus.Fatalln("load tls certificate:", err)
+	}
+	tlsConfig := &tls.Config{
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return &tlsCert, nil
+		},
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	client, err := ppanel.NewClient(nodeConfig.PanelURL, nodeConfig.ServerID, nodeConfig.SecretKey)
+	if err != nil {
+		logrus.Fatalln("create ppanel client:", err)
+	}
+	snapshot, err := fetchNodeSnapshot(ctx, client)
+	if err != nil {
+		logrus.Fatalln("fetch node snapshot:", err)
+	}
+	listenAddr := resolveListenAddr("", snapshot.Port)
+	server := NewNodeServer(tlsConfig, state.NewStore(snapshot), state.NewDeviceTracker(), state.NewTrafficAggregator(), client)
 
 	logrus.Infoln("[Server]", util.ProgramVersionName)
-	logrus.Infoln("[Server] Listening TCP", *listen)
+	logrus.Infoln("[Server] Listening TCP", listenAddr)
 
-	listener, err := net.Listen("tcp", *listen)
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		logrus.Fatalln("listen server tcp:", err)
 	}
 
-	tlsCert, _ := util.GenerateKeyPair(time.Now, "")
-	tlsConfig := &tls.Config{
-		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return tlsCert, nil
-		},
-	}
+	runtime := newServerRuntime(server, listener)
+	runtime.StartBackgroundTasks(ctx)
 
-	ctx := context.Background()
-	server := NewMyServer(tlsConfig)
+	serveErrCh := make(chan error, 1)
+	go func() {
+		serveErrCh <- runtime.Serve(ctx)
+	}()
 
-	for {
-		c, err := listener.Accept()
-		if err != nil {
-			logrus.Fatalln("accept:", err)
+	var serveErr error
+	var serveReturned bool
+
+	select {
+	case <-ctx.Done():
+		logrus.Infoln("[Server] shutdown signal received")
+	case serveErr = <-serveErrCh:
+		serveReturned = true
+		if serveErr != nil {
+			logrus.Errorln("serve:", serveErr)
 		}
-		go handleTcpConnection(ctx, c, server)
+		stop()
 	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		logrus.Errorln("shutdown:", err)
+	}
+
+	if !serveReturned {
+		serveErr = <-serveErrCh
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		logrus.Fatalln("server stopped with error:", serveErr)
+	}
+}
+
+func resolveLogLevel(level string) string {
+	if level == "" {
+		return "info"
+	}
+	if level == "warning" {
+		return "warn"
+	}
+	return level
+}
+
+func configureLogging(nodeConfig *config.NodeConfig) (*os.File, error) {
+	if nodeConfig == nil || nodeConfig.LogFileDir == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(nodeConfig.LogFileDir, 0755); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+	logPath := filepath.Join(nodeConfig.LogFileDir, "anytls-server.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+	logrus.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	return logFile, nil
 }

@@ -2,23 +2,6 @@
 # Make sure to check the documentation at https://goreleaser.com
 project_name: anytls
 builds:
-  - id: anytls-client
-    binary: anytls-client
-    dir: cmd/client
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - windows
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    flags:
-      - -trimpath
-      - -buildvcs=false
-    ldflags:
-      - -s -w
   - id: anytls-server
     binary: anytls-server
     dir: cmd/server
@@ -39,7 +22,6 @@ builds:
 archives:
   - id: anytls
     builds:
-      - anytls-client
       - anytls-server
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format: zip

@@ -1,6 +1,6 @@
 # AnyTLS
 
-一个试图缓解 嵌套的TLS握手指纹(TLS in TLS) 问题的代理协议。`anytls-go` 是该协议的参考实现。
+一个试图缓解 嵌套的TLS握手指纹(TLS in TLS) 问题的代理协议。`anytls-go` 当前提供 AnyTLS 服务端实现。
 
 - 灵活的分包和填充策略
 - 连接复用，降低代理延迟
@@ -12,44 +12,191 @@
 
 [URI 格式](./docs/uri_scheme.md)
 
-## 快速食用方法
+[发布指南](./docs/release.md)
 
-为了方便，示例服务器和客户端默认采用不安全的配置，该配置假设您不会遭遇 TLS 中间人攻击（这种情况偶尔发生在网络接入层，在骨干网络上几乎不可能实现）；否则，您的通信内容可能会被中间人截获。
+[发布检查模板](./docs/release-checklist.md)
 
-### 示例服务器
+## 启动方式
+
+当前服务端只支持基于 PPanel v1 节点模式启动，并通过 TOML 配置文件加载节点接入参数。
+
+### 示例配置文件
+
+完整示例见仓库根目录的 [node.example.toml](node.example.toml)。
+
+配置文件扩展名必须为 `.toml`，并使用如下结构：
+
+```toml
+[Panel]
+webapi_url = "https://api.ppanel.dev"
+webapi_key = "1234567890"
+node_id = 1
+
+[TLS]
+cert_file = "/etc/anytls/cert.pem"
+key_file = "/etc/anytls/key.pem"
+
+[Config]
+log_level = "info"
+log_file_dir = "/etc/anytls/log"
+```
+
+其中 `Config.log_file_dir` 为可选项；设置后，服务端会同时输出到标准输出和该目录下的 `anytls-server.log`。
+
+### 示例启动
 
 ```
-./anytls-server -l 0.0.0.0:8443 -p 密码
+./anytls-server -c ./node.toml
 ```
 
-`0.0.0.0:8443` 为服务器监听的地址和端口。
+## Docker 部署
 
-### 示例客户端
-
-```
-./anytls-client -l 127.0.0.1:1080 -s 服务器ip:端口 -p 密码
-```
-
-`127.0.0.1:1080` 为本机 Socks5 代理监听地址，理论上支持 TCP 和 UDP(通过 udp over tcp 传输)。
-
-v0.0.12 版本起，示例客户端可直接使用 URI 格式:
+### 构建镜像
 
 ```
-./anytls-client -l 127.0.0.1:1080 -s "anytls://password@host:port"
+docker build -t anytls-ppanel:latest .
 ```
+
+### 使用 buildx 构建多平台镜像
+
+仓库根目录已提供 [docker-bake.hcl](docker-bake.hcl)。如果你主要部署到 Linux 服务器，建议统一使用 buildx：
+
+单平台本地加载到当前 Docker：
+
+```
+docker buildx bake image-local
+```
+
+构建 Linux 多平台镜像并推送到仓库：
+
+```
+docker buildx bake image-multiarch \
+	--set image-multiarch.tags=ghcr.io/0xTunnel/anytls-ppanel:latest \
+	--push
+```
+
+如果你不使用 bake，也可以直接执行：
+
+```
+docker buildx build \
+	--platform linux/amd64,linux/arm64 \
+	-t ghcr.io/0xTunnel/anytls-ppanel:latest \
+	--push \
+	.
+```
+
+如需显式指定目标平台，可使用：
+
+```
+docker build --platform linux/amd64 -t anytls-ppanel:latest .
+```
+
+### 容器启动
+
+当前仓库已提供 [compose.yaml](compose.yaml)。镜像默认启动命令为 `-c /etc/anytls/node.toml`，并使用 host 网络。
+
+默认镜像地址使用 GHCR 形式：`ghcr.io/0xTunnel/anytls-ppanel:latest`。实际部署时，如需覆盖标签，可通过环境变量指定：
+
+```
+export ANYTLS_IMAGE=ghcr.io/0xTunnel/anytls-ppanel:latest
+```
+
+compose 当前采用更保守的挂载方式：
+
+1. `node.toml` 只读挂载到容器内
+2. `cert.pem` 和 `key.pem` 只读挂载到容器内
+3. `./log` 单独挂载为日志目录
+4. 容器日志启用 `json-file` 轮转，单文件 `10m`，保留 `3` 份
+
+镜像内已预创建 `/etc/anytls/log`，并使用 `SIGTERM` 作为停止信号，适合直接交给 Docker 或 systemd 驱动的 compose 进行启停管理。
+
+使用方式：
+
+```
+cp node.example.toml node.toml
+mkdir -p log
+docker compose up -d
+```
+
+请确保当前目录下存在：
+
+1. `node.toml`
+2. `cert.pem`
+3. `key.pem`
+4. `log/`
+
+并且 `node.toml` 中的路径保持与容器内路径一致：
+
+```toml
+[TLS]
+cert_file = "/etc/anytls/cert.pem"
+key_file = "/etc/anytls/key.pem"
+
+[Config]
+log_file_dir = "/etc/anytls/log"
+```
+
+由于 compose 使用 `network_mode: host`，无需再单独配置 `ports` 映射。
+
+如果服务器需要拉取私有 GHCR 镜像，请先登录：
+
+```
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u 0xTunnel --password-stdin
+```
+
+如果你希望服务器无需登录即可直接拉取，建议将 GHCR 包设为公开：
+
+1. 打开 GitHub 上 0xTunnel 账号或组织的 Packages 页面
+2. 进入 `anytls-ppanel` 包详情
+3. 打开包设置页
+4. 将包可见性改为 `Public`
+
+公开后，服务器可直接执行 `docker compose up -d` 拉取镜像，无需额外 `docker login`。
+
+### GitHub Actions 发布到 GHCR
+
+仓库已提供 [docker-publish.yml](.github/workflows/docker-publish.yml)。它会：
+
+1. 在 `main` 分支 push 时运行测试并发布多平台镜像
+2. 在 `v*` 标签 push 时发布对应 tag 镜像
+3. 在 PR 中只做测试和构建校验，不推送镜像
+
+发布约定建议如下：
+
+1. 日常滚动发布：push 到 `main`，生成 `latest` 和短 SHA 标签
+2. 版本发布：打 `v1.0.0` 这类标签，生成 `ghcr.io/0xTunnel/anytls-ppanel:v1.0.0`
+
+示例：
+
+```
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Workflow 默认会把镜像发布到：
+
+```
+ghcr.io/0xTunnel/anytls-ppanel
+```
+
+完整的 CI 发布说明、版本发布步骤和发版检查清单见 [docs/release.md](./docs/release.md)。
+
+仓库根目录提供了 [node.example.toml](node.example.toml) 作为容器和宿主机部署的共用模板。
+
+如需客户端，请使用已支持 AnyTLS 的第三方实现，例如 sing-box、mihomo 或 Shadowrocket。
 
 ### sing-box
 
 https://github.com/SagerNet/sing-box
 
-它包含了 anytls 协议的服务器和客户端。
+它包含了 anytls 协议的服务器和客户端实现。
 
 ### mihomo
 
 https://github.com/MetaCubeX/mihomo
 
-它包含了 anytls 协议的服务器和客户端。
+它包含了 anytls 协议的服务器和客户端实现。
 
 ### Shadowrocket
 
-Shadowrocket 2.2.65+ 实现了 anytls 协议的客户端。
+Shadowrocket 2.2.65+ 实现了 anytls 协议客户端。

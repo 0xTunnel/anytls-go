@@ -1,0 +1,12 @@
+.git
+.github
+.vscode
+dist
+anytls-server
+*.exe
+*.zip
+node.toml
+cert.pem
+key.pem
+log/
+*.log

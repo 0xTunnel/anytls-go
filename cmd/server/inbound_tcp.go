@@ -1,15 +1,18 @@
 package main
 
 import (
+	"anytls/internal/node/state"
 	"anytls/proxy/padding"
 	"anytls/proxy/session"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -37,13 +40,53 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 	}
 	c = bufio.NewCachedConn(c, b)
 
-	by, err := b.ReadBytes(32)
-	if err != nil || !bytes.Equal(by, passwordSha256) {
+	authHash, err := b.ReadBytes(32)
+	if err != nil {
 		b.Resize(0, n)
 		fallback(ctx, c)
 		return
 	}
-	by, err = b.ReadBytes(2)
+	var userID int64
+	var releaseOnce sync.Once
+	var release func()
+	defer func() {
+		releaseOnce.Do(func() {
+			if release != nil {
+				release()
+			}
+		})
+	}()
+	if s.IsNodeMode() {
+		snapshot := s.snapshotStore.Load()
+		if snapshot == nil {
+			logrus.Errorln("node snapshot is empty")
+			b.Resize(0, n)
+			fallback(ctx, c)
+			return
+		}
+		user, ok := snapshot.LookupAuthHash(authHash)
+		if !ok {
+			b.Resize(0, n)
+			fallback(ctx, c)
+			return
+		}
+		remoteIP := remoteIPFromAddr(c.RemoteAddr())
+		if err := s.deviceTracker.Acquire(user.ID, remoteIP, user.DeviceLimit); err != nil {
+			if errors.Is(err, state.ErrDeviceLimitExceeded) {
+				logrus.Warnf("reject user %d from %s: device limit exceeded", user.ID, remoteIP)
+			} else {
+				logrus.Warnf("reject user %d from %s: %v", user.ID, remoteIP, err)
+			}
+			b.Resize(0, n)
+			fallback(ctx, c)
+			return
+		}
+		userID = user.ID
+		release = func() {
+			s.deviceTracker.Release(user.ID, remoteIP)
+		}
+	}
+	by, err := b.ReadBytes(2)
 	if err != nil {
 		b.Resize(0, n)
 		fallback(ctx, c)
@@ -79,11 +122,32 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 			proxyOutboundTCP(ctx, stream, destination)
 		}
 	}, &padding.DefaultPaddingFactory)
+	if userID > 0 {
+		session.SetUserContext(userID, s.traffic)
+		session.SetCloseHook(func() {
+			releaseOnce.Do(func() {
+				if release != nil {
+					release()
+				}
+			})
+		})
+	}
 	session.Run()
 	session.Close()
 }
 
+func remoteIPFromAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
 func fallback(ctx context.Context, c net.Conn) {
 	// 暂未实现
-	logrus.Debugln("fallback:", c.RemoteAddr())
+	logrus.Debugln("fallback:", fmt.Sprint(c.RemoteAddr()))
 }

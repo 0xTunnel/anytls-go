@@ -1,0 +1,18 @@
+services:
+  anytls-ppanel:
+    image: ${ANYTLS_IMAGE:-ghcr.io/0xTunnel/anytls-ppanel:latest}
+    container_name: anytls-ppanel
+    network_mode: host
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    volumes:
+      - ./node.toml:/etc/anytls/node.toml:ro
+      - ./cert.pem:/etc/anytls/cert.pem:ro
+      - ./key.pem:/etc/anytls/key.pem:ro
+      - ./log:/etc/anytls/log
