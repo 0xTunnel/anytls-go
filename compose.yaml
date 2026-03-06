@@ -12,7 +12,4 @@ services:
         max-size: 10m
         max-file: "3"
     volumes:
-      - ./node.toml:/etc/anytls/node.toml:ro
-      - ./cert.pem:/etc/anytls/cert.pem:ro
-      - ./key.pem:/etc/anytls/key.pem:ro
-      - ./log:/etc/anytls/log
+      - .:/etc/anytls
