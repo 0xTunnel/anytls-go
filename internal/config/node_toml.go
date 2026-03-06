@@ -11,6 +11,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const (
+	defaultTCPTimeoutMinutes = 60
+	defaultUDPTimeoutMinutes = 2
+	maxTimeoutMinutes        = int64((1<<63 - 1) / int64(time.Minute))
+)
+
 type NodeConfig struct {
 	PanelURL    string
 	SecretKey   string
@@ -20,6 +26,8 @@ type NodeConfig struct {
 	LogLevel    string
 	LogFileDir  string
 	TimeZone    string
+	TCPTimeout  time.Duration
+	UDPTimeout  time.Duration
 	Path        string
 }
 
@@ -38,6 +46,10 @@ type nodeConfigFile struct {
 		LogFileDir string `toml:"log_file_dir"`
 		TimeZone   string `toml:"timezone"`
 	} `toml:"Config"`
+	Network struct {
+		TCPTimeout *int `toml:"tcp_timeout"`
+		UDPTimeout *int `toml:"udp_timeout"`
+	} `toml:"Network"`
 }
 
 func LoadNodeConfig(path string) (*NodeConfig, error) {
@@ -59,6 +71,15 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 	}
 
 	configDir := filepath.Dir(absPath)
+	tcpTimeout, err := parsePositiveMinutes(raw.Network.TCPTimeout, defaultTCPTimeoutMinutes, "Network.tcp_timeout")
+	if err != nil {
+		return nil, err
+	}
+	udpTimeout, err := parsePositiveMinutes(raw.Network.UDPTimeout, defaultUDPTimeoutMinutes, "Network.udp_timeout")
+	if err != nil {
+		return nil, err
+	}
+
 	config := &NodeConfig{
 		PanelURL:    strings.TrimSpace(raw.Panel.WebAPIURL),
 		SecretKey:   strings.TrimSpace(raw.Panel.WebAPIKey),
@@ -68,6 +89,8 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 		LogLevel:    strings.ToLower(strings.TrimSpace(raw.Config.LogLevel)),
 		LogFileDir:  resolveOptionalPath(configDir, raw.Config.LogFileDir),
 		TimeZone:    strings.TrimSpace(raw.Config.TimeZone),
+		TCPTimeout:  tcpTimeout,
+		UDPTimeout:  udpTimeout,
 		Path:        absPath,
 	}
 
@@ -144,6 +167,19 @@ func parseLogLevel(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported value %q", value)
 	}
+}
+
+func parsePositiveMinutes(value *int, defaultMinutes int, field string) (time.Duration, error) {
+	if value == nil {
+		return time.Duration(defaultMinutes) * time.Minute, nil
+	}
+	if *value <= 0 {
+		return 0, fmt.Errorf("config %s must be greater than zero", field)
+	}
+	if int64(*value) > maxTimeoutMinutes {
+		return 0, fmt.Errorf("config %s is too large", field)
+	}
+	return time.Duration(*value) * time.Minute, nil
 }
 
 func parseTimeZone(value string) (*time.Location, error) {

@@ -13,7 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksaddr, requestFields logrus.Fields) error {
+func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksaddr, requestFields logrus.Fields, timeouts networkTimeouts) error {
 	connTag := connTagFromFields(requestFields)
 	if logrus.IsLevelEnabled(logrus.DebugLevel) && destination.IsFqdn() {
 		if ips, err := net.DefaultResolver.LookupIPAddr(ctx, destination.Fqdn); err == nil && len(ips) > 0 {
@@ -34,6 +34,8 @@ func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksadd
 		return err
 	}
 	defer c.Close()
+	conn = withIdleTimeoutConn(conn, timeouts.TCP)
+	c = withIdleTimeoutConn(c, timeouts.TCP)
 
 	err = N.ReportHandshakeSuccess(conn)
 	if err != nil {
@@ -50,7 +52,7 @@ func proxyOutboundTCP(ctx context.Context, conn net.Conn, destination M.Socksadd
 	return bufio.CopyConn(ctx, conn, c)
 }
 
-func proxyOutboundUoT(ctx context.Context, conn net.Conn, destination M.Socksaddr, requestFields logrus.Fields) error {
+func proxyOutboundUoT(ctx context.Context, conn net.Conn, destination M.Socksaddr, requestFields logrus.Fields, timeouts networkTimeouts) error {
 	connTag := connTagFromFields(requestFields)
 	request, err := uot.ReadRequest(conn)
 	if err != nil {
@@ -81,6 +83,8 @@ func proxyOutboundUoT(ctx context.Context, conn net.Conn, destination M.Socksadd
 		return err
 	}
 	defer c.Close()
+	conn = withIdleTimeoutConn(conn, timeouts.UDP)
+	c = withIdleTimeoutPacketConn(c, timeouts.UDP)
 
 	err = N.ReportHandshakeSuccess(conn)
 	if err != nil {

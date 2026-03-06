@@ -3,6 +3,7 @@ package main
 import (
 	"anytls/internal/config"
 	"anytls/internal/node/state"
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -104,6 +105,49 @@ func TestConfigureLoggingNoopWhenConfigMissing(t *testing.T) {
 	}
 	if !configuredLogColorEnabled() {
 		t.Fatal("configuredLogColorEnabled() = false, want true without file logging")
+	}
+}
+
+func TestConfigLoadedMessageUsesConfiguredFormatter(t *testing.T) {
+	oldOutput := logrus.StandardLogger().Out
+	oldFormatter := logrus.StandardLogger().Formatter
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	oldStdoutIsTerminal := stdoutIsTerminal
+	defer logrus.SetOutput(oldOutput)
+	defer logrus.SetFormatter(oldFormatter)
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	defer func() { stdoutIsTerminal = oldStdoutIsTerminal }()
+	stdoutIsTerminal = func() bool { return false }
+
+	var buffer bytes.Buffer
+	logrus.SetOutput(&buffer)
+
+	if _, err := configureLogging(&config.NodeConfig{TimeZone: "UTC+8"}); err != nil {
+		t.Fatalf("configureLogging() error = %v", err)
+	}
+
+	entry := eventLogger("server", logrus.Fields{
+		"config_path": "/etc/anytls/node.toml",
+		"node_id":     int64(1),
+	}, "load_config")
+	entry.Level = logrus.InfoLevel
+	entry.Message = "node config loaded"
+	entry.Time = time.Date(2026, 3, 6, 12, 21, 20, 0, time.UTC)
+	formatted, err := logrus.StandardLogger().Formatter.Format(entry)
+	if err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	if _, err := logrus.StandardLogger().Out.Write(formatted); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	output := buffer.String()
+	if !strings.Contains(output, "2026/03/06 20:21:20 INFO - node config loaded") {
+		t.Fatalf("formatted output = %q, want unified console formatter", output)
+	}
+	if strings.Contains(output, "level=info") || strings.Contains(output, `time="`) {
+		t.Fatalf("formatted output = %q, want no default logrus text formatter fields", output)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadNodeConfigFromTOML(t *testing.T) {
@@ -17,7 +18,7 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 		t.Fatalf("WriteFile(key) error = %v", err)
 	}
 	configPath := filepath.Join(tempDir, "node.toml")
-	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\ntimezone = \"Asia/Shanghai\"\n")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\ntimezone = \"Asia/Shanghai\"\n\n[Network]\ntcp_timeout = 90\nudp_timeout = 5\n")
 	if err := os.WriteFile(configPath, content, 0644); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
@@ -49,6 +50,68 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 	}
 	if config.TimeZone != "Asia/Shanghai" {
 		t.Fatalf("TimeZone = %q", config.TimeZone)
+	}
+	if config.TCPTimeout != 90*time.Minute {
+		t.Fatalf("TCPTimeout = %s", config.TCPTimeout)
+	}
+	if config.UDPTimeout != 5*time.Minute {
+		t.Fatalf("UDPTimeout = %s", config.UDPTimeout)
+	}
+}
+
+func TestLoadNodeConfigUsesDefaultNetworkTimeouts(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	config, err := LoadNodeConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadNodeConfig() error = %v", err)
+	}
+	if config.TCPTimeout != 60*time.Minute {
+		t.Fatalf("TCPTimeout = %s, want %s", config.TCPTimeout, 60*time.Minute)
+	}
+	if config.UDPTimeout != 2*time.Minute {
+		t.Fatalf("UDPTimeout = %s, want %s", config.UDPTimeout, 2*time.Minute)
+	}
+}
+
+func TestLoadNodeConfigUsesDefaultForMissingNetworkField(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Network]\ntcp_timeout = 30\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	config, err := LoadNodeConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadNodeConfig() error = %v", err)
+	}
+	if config.TCPTimeout != 30*time.Minute {
+		t.Fatalf("TCPTimeout = %s, want %s", config.TCPTimeout, 30*time.Minute)
+	}
+	if config.UDPTimeout != 2*time.Minute {
+		t.Fatalf("UDPTimeout = %s, want %s", config.UDPTimeout, 2*time.Minute)
 	}
 }
 
@@ -103,6 +166,69 @@ func TestLoadNodeConfigRejectsInvalidTimeZone(t *testing.T) {
 
 	if _, err := LoadNodeConfig(configPath); err == nil {
 		t.Fatal("LoadNodeConfig() expected time zone error")
+	}
+}
+
+func TestLoadNodeConfigRejectsInvalidTCPTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Network]\ntcp_timeout = 0\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected tcp timeout error")
+	}
+}
+
+func TestLoadNodeConfigRejectsInvalidUDPTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Network]\nudp_timeout = -1\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected udp timeout error")
+	}
+}
+
+func TestLoadNodeConfigRejectsTooLargeTCPTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Network]\ntcp_timeout = 153722868\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected oversized tcp timeout error")
 	}
 }
 

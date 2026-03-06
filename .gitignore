@@ -2,6 +2,7 @@
 /cmd/server/server
 /anytls-server
 /server
+/server.test
 *.exe
 *.zip
 .vscode

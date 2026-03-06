@@ -5,7 +5,13 @@ import (
 	"anytls/internal/ppanel"
 	"crypto/tls"
 	"sync"
+	"time"
 )
+
+type networkTimeouts struct {
+	TCP time.Duration
+	UDP time.Duration
+}
 
 type myServer struct {
 	tlsConfig        *tls.Config
@@ -14,12 +20,13 @@ type myServer struct {
 	traffic          *state.TrafficAggregator
 	panelClient      *ppanel.Client
 	userSnapshotPath string
+	networkTimeouts  networkTimeouts
 
 	snapshotLogMu         sync.Mutex
 	lastSnapshotSignature string
 }
 
-func NewNodeServer(tlsConfig *tls.Config, snapshotStore *state.Store, deviceTracker *state.DeviceTracker, traffic *state.TrafficAggregator, panelClient *ppanel.Client, userSnapshotPath string) *myServer {
+func NewNodeServer(tlsConfig *tls.Config, snapshotStore *state.Store, deviceTracker *state.DeviceTracker, traffic *state.TrafficAggregator, panelClient *ppanel.Client, userSnapshotPath string, timeouts networkTimeouts) *myServer {
 	server := &myServer{
 		tlsConfig:        tlsConfig,
 		snapshotStore:    snapshotStore,
@@ -27,6 +34,7 @@ func NewNodeServer(tlsConfig *tls.Config, snapshotStore *state.Store, deviceTrac
 		traffic:          traffic,
 		panelClient:      panelClient,
 		userSnapshotPath: userSnapshotPath,
+		networkTimeouts:  timeouts,
 	}
 	if snapshotStore != nil {
 		if snapshot := snapshotStore.Load(); snapshot != nil {

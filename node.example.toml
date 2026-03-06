@@ -11,3 +11,7 @@ key_file = "/etc/anytls/key.pem"
 log_level = "info"
 log_file_dir = "/etc/anytls/log"
 timezone = "UTC+8"
+
+[Network]
+tcp_timeout = 60
+udp_timeout = 2

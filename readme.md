@@ -40,9 +40,18 @@ key_file = "/etc/anytls/key.pem"
 log_level = "info"
 log_file_dir = "/etc/anytls/log"
 timezone = "UTC+8"
+
+[Network]
+tcp_timeout = 60
+udp_timeout = 2
 ```
 
 其中 `Config.log_file_dir` 为可选项；设置后，服务端会同时输出到标准输出和该目录下的 `anytls-server.log`。`/v1/server/user` 拉取到的用户列表也会以格式化 JSON 形式保存为同目录下的 `ppanel-users.json`；如果未设置 `Config.log_file_dir`，则默认保存到节点配置文件所在目录。`Config.timezone` 也为可选项，默认使用 `UTC+8`，可填写 `UTC+8` 这类 UTC 偏移格式，或 `Asia/Shanghai` 这类 IANA 时区名称。
+
+`Network` 配置组用于声明空闲连接超时，单位均为分钟：
+
+- `Network.tcp_timeout`：空闲 TCP 连接超时时间，默认 `60`，设置值必须大于 `0`
+- `Network.udp_timeout`：空闲 UDP 连接超时时间，默认 `2`，设置值必须大于 `0`
 
 ### 日志说明
 

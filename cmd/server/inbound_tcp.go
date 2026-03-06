@@ -136,9 +136,9 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		eventLogger("inbound", requestFields, "access_target").Debug(formatAccessTargetMessageWithTag(connTag, userID, destination.String()))
 
 		if strings.Contains(destination.String(), "udp-over-tcp.arpa") {
-			proxyOutboundUoT(ctx, stream, destination, requestFields)
+			proxyOutboundUoT(ctx, stream, destination, requestFields, s.networkTimeouts)
 		} else {
-			proxyOutboundTCP(ctx, stream, destination, requestFields)
+			proxyOutboundTCP(ctx, stream, destination, requestFields, s.networkTimeouts)
 		}
 	}, &padding.DefaultPaddingFactory)
 	if userID > 0 {

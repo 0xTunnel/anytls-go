@@ -35,10 +35,6 @@ func main() {
 	if err != nil {
 		eventLogger("server", nil, "load_config_failed").WithError(err).Fatal("load node config failed")
 	}
-	eventLogger("server", logrus.Fields{
-		"config_path": nodeConfig.Path,
-		"node_id":     nodeConfig.ServerID,
-	}, "load_config").Info("node config loaded")
 
 	logFile, err := configureLogging(nodeConfig)
 	if err != nil {
@@ -47,6 +43,12 @@ func main() {
 	if logFile != nil {
 		defer logFile.Close()
 	}
+
+	// Keep this after configureLogging so startup logs use the unified formatter.
+	eventLogger("server", logrus.Fields{
+		"config_path": nodeConfig.Path,
+		"node_id":     nodeConfig.ServerID,
+	}, "load_config").Info("node config loaded")
 
 	logLevel, err := logrus.ParseLevel(resolveLogLevel(nodeConfig.LogLevel))
 	if err != nil {
@@ -84,7 +86,15 @@ func main() {
 		"push_interval": snapshot.PushInterval.String(),
 	}, "initial_snapshot").Info("initial node snapshot loaded")
 	listenAddr := resolveListenAddr("", snapshot.Port)
-	server := NewNodeServer(tlsConfig, state.NewStore(snapshot), state.NewDeviceTracker(), state.NewTrafficAggregator(), client, userSnapshotPath)
+	server := NewNodeServer(
+		tlsConfig,
+		state.NewStore(snapshot),
+		state.NewDeviceTracker(),
+		state.NewTrafficAggregator(),
+		client,
+		userSnapshotPath,
+		networkTimeouts{TCP: nodeConfig.TCPTimeout, UDP: nodeConfig.UDPTimeout},
+	)
 
 	eventLogger("server", logrus.Fields{
 		"node_id":     nodeConfig.ServerID,
@@ -92,7 +102,9 @@ func main() {
 		"log_level":   logLevel.String(),
 		"server_tz":   currentServerTimeZone(),
 		"log_tz":      configuredLogTimeZone(),
+		"tcp_timeout": nodeConfig.TCPTimeout.String(),
 		"transport":   "tcp+tls",
+		"udp_timeout": nodeConfig.UDPTimeout.String(),
 		"version":     util.ProgramVersionName,
 	}, "startup").Info("server initialized")
 
