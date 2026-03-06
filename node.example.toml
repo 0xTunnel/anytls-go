@@ -10,8 +10,12 @@ key_file = "/etc/anytls/key.pem"
 [Config]
 log_level = "info"
 log_file_dir = "/etc/anytls/log"
+# 0 表示永久保留；大于 0 时保留最近 N 天日志文件
+log_file_retention_days = 7
 timezone = "UTC+8"
 
 [Network]
 tcp_timeout = 60
 udp_timeout = 2
+# 0 表示不限制；只统计每名用户当前入站 TCP 连接数
+tcp_limit = 0

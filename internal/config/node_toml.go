@@ -18,17 +18,19 @@ const (
 )
 
 type NodeConfig struct {
-	PanelURL    string
-	SecretKey   string
-	ServerID    int64
-	TLSCertFile string
-	TLSKeyFile  string
-	LogLevel    string
-	LogFileDir  string
-	TimeZone    string
-	TCPTimeout  time.Duration
-	UDPTimeout  time.Duration
-	Path        string
+	PanelURL             string
+	SecretKey            string
+	ServerID             int64
+	TLSCertFile          string
+	TLSKeyFile           string
+	LogLevel             string
+	LogFileDir           string
+	LogFileRetentionDays int
+	TimeZone             string
+	TCPTimeout           time.Duration
+	UDPTimeout           time.Duration
+	TCPLimit             int64
+	Path                 string
 }
 
 type nodeConfigFile struct {
@@ -42,13 +44,15 @@ type nodeConfigFile struct {
 		KeyFile  string `toml:"key_file"`
 	} `toml:"TLS"`
 	Config struct {
-		LogLevel   string `toml:"log_level"`
-		LogFileDir string `toml:"log_file_dir"`
-		TimeZone   string `toml:"timezone"`
+		LogLevel             string `toml:"log_level"`
+		LogFileDir           string `toml:"log_file_dir"`
+		LogFileRetentionDays *int   `toml:"log_file_retention_days"`
+		TimeZone             string `toml:"timezone"`
 	} `toml:"Config"`
 	Network struct {
 		TCPTimeout *int `toml:"tcp_timeout"`
 		UDPTimeout *int `toml:"udp_timeout"`
+		TCPLimit   *int `toml:"tcp_limit"`
 	} `toml:"Network"`
 }
 
@@ -79,19 +83,29 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	logFileRetentionDays, err := parseNonNegativeInt(raw.Config.LogFileRetentionDays, 0, "Config.log_file_retention_days")
+	if err != nil {
+		return nil, err
+	}
+	tcpLimit, err := parseNonNegativeInt(raw.Network.TCPLimit, 0, "Network.tcp_limit")
+	if err != nil {
+		return nil, err
+	}
 
 	config := &NodeConfig{
-		PanelURL:    strings.TrimSpace(raw.Panel.WebAPIURL),
-		SecretKey:   strings.TrimSpace(raw.Panel.WebAPIKey),
-		ServerID:    raw.Panel.NodeID,
-		TLSCertFile: resolvePath(configDir, raw.TLS.CertFile),
-		TLSKeyFile:  resolvePath(configDir, raw.TLS.KeyFile),
-		LogLevel:    strings.ToLower(strings.TrimSpace(raw.Config.LogLevel)),
-		LogFileDir:  resolveOptionalPath(configDir, raw.Config.LogFileDir),
-		TimeZone:    strings.TrimSpace(raw.Config.TimeZone),
-		TCPTimeout:  tcpTimeout,
-		UDPTimeout:  udpTimeout,
-		Path:        absPath,
+		PanelURL:             strings.TrimSpace(raw.Panel.WebAPIURL),
+		SecretKey:            strings.TrimSpace(raw.Panel.WebAPIKey),
+		ServerID:             raw.Panel.NodeID,
+		TLSCertFile:          resolvePath(configDir, raw.TLS.CertFile),
+		TLSKeyFile:           resolvePath(configDir, raw.TLS.KeyFile),
+		LogLevel:             strings.ToLower(strings.TrimSpace(raw.Config.LogLevel)),
+		LogFileDir:           resolveOptionalPath(configDir, raw.Config.LogFileDir),
+		LogFileRetentionDays: logFileRetentionDays,
+		TimeZone:             strings.TrimSpace(raw.Config.TimeZone),
+		TCPTimeout:           tcpTimeout,
+		UDPTimeout:           udpTimeout,
+		TCPLimit:             int64(tcpLimit),
+		Path:                 absPath,
 	}
 
 	if config.PanelURL == "" {
@@ -180,6 +194,16 @@ func parsePositiveMinutes(value *int, defaultMinutes int, field string) (time.Du
 		return 0, fmt.Errorf("config %s is too large", field)
 	}
 	return time.Duration(*value) * time.Minute, nil
+}
+
+func parseNonNegativeInt(value *int, defaultValue int, field string) (int, error) {
+	if value == nil {
+		return defaultValue, nil
+	}
+	if *value < 0 {
+		return 0, fmt.Errorf("config %s must be greater than or equal to zero", field)
+	}
+	return *value, nil
 }
 
 func parseTimeZone(value string) (*time.Location, error) {

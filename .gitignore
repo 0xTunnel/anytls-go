@@ -7,3 +7,4 @@
 *.zip
 .vscode
 logs*
+.DS_Store

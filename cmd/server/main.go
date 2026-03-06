@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -90,10 +89,12 @@ func main() {
 		tlsConfig,
 		state.NewStore(snapshot),
 		state.NewDeviceTracker(),
+		state.NewTCPTracker(),
 		state.NewTrafficAggregator(),
 		client,
 		userSnapshotPath,
 		networkTimeouts{TCP: nodeConfig.TCPTimeout, UDP: nodeConfig.UDPTimeout},
+		nodeConfig.TCPLimit,
 	)
 
 	eventLogger("server", logrus.Fields{
@@ -161,7 +162,7 @@ func resolveLogLevel(level string) string {
 	return level
 }
 
-func configureLogging(nodeConfig *config.NodeConfig) (*os.File, error) {
+func configureLogging(nodeConfig *config.NodeConfig) (io.Closer, error) {
 	if err := setLogTimeZone(nodeConfig); err != nil {
 		return nil, fmt.Errorf("configure log timezone: %w", err)
 	}
@@ -173,8 +174,8 @@ func configureLogging(nodeConfig *config.NodeConfig) (*os.File, error) {
 	if err := os.MkdirAll(nodeConfig.LogFileDir, 0755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	logPath := filepath.Join(nodeConfig.LogFileDir, "anytls-server.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	location, _ := currentLogFormatState()
+	logFile, err := newDailyLogWriter(nodeConfig.LogFileDir, nodeConfig.LogFileRetentionDays, location, logWriterNow)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}

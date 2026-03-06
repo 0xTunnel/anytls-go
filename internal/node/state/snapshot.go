@@ -37,15 +37,9 @@ func BuildSnapshot(config *ppanel.ServerConfigResponse, users []ppanel.ServerUse
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	protocol := strings.TrimSpace(config.Protocol)
+	protocol := strings.ToLower(strings.TrimSpace(config.Protocol))
 	if protocol == "" {
 		protocol = "anytls"
-	}
-	if protocol != "anytls" {
-		return nil, fmt.Errorf("unsupported protocol %q", protocol)
-	}
-	if config.Config.Port <= 0 {
-		return nil, fmt.Errorf("invalid anytls port %d", config.Config.Port)
 	}
 
 	snapshot := &Snapshot{

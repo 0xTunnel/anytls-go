@@ -18,7 +18,7 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 		t.Fatalf("WriteFile(key) error = %v", err)
 	}
 	configPath := filepath.Join(tempDir, "node.toml")
-	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\ntimezone = \"Asia/Shanghai\"\n\n[Network]\ntcp_timeout = 90\nudp_timeout = 5\n")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\nlog_file_retention_days = 7\ntimezone = \"Asia/Shanghai\"\n\n[Network]\ntcp_timeout = 90\nudp_timeout = 5\ntcp_limit = 20\n")
 	if err := os.WriteFile(configPath, content, 0644); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
@@ -48,6 +48,9 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 	if config.LogFileDir != filepath.Join(tempDir, "log") {
 		t.Fatalf("LogFileDir = %q", config.LogFileDir)
 	}
+	if config.LogFileRetentionDays != 7 {
+		t.Fatalf("LogFileRetentionDays = %d", config.LogFileRetentionDays)
+	}
 	if config.TimeZone != "Asia/Shanghai" {
 		t.Fatalf("TimeZone = %q", config.TimeZone)
 	}
@@ -56,6 +59,9 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 	}
 	if config.UDPTimeout != 5*time.Minute {
 		t.Fatalf("UDPTimeout = %s", config.UDPTimeout)
+	}
+	if config.TCPLimit != 20 {
+		t.Fatalf("TCPLimit = %d", config.TCPLimit)
 	}
 }
 
@@ -84,6 +90,12 @@ func TestLoadNodeConfigUsesDefaultNetworkTimeouts(t *testing.T) {
 	}
 	if config.UDPTimeout != 2*time.Minute {
 		t.Fatalf("UDPTimeout = %s, want %s", config.UDPTimeout, 2*time.Minute)
+	}
+	if config.LogFileRetentionDays != 0 {
+		t.Fatalf("LogFileRetentionDays = %d, want %d", config.LogFileRetentionDays, 0)
+	}
+	if config.TCPLimit != 0 {
+		t.Fatalf("TCPLimit = %d, want %d", config.TCPLimit, 0)
 	}
 }
 
@@ -208,6 +220,48 @@ func TestLoadNodeConfigRejectsInvalidUDPTimeout(t *testing.T) {
 
 	if _, err := LoadNodeConfig(configPath); err == nil {
 		t.Fatal("LoadNodeConfig() expected udp timeout error")
+	}
+}
+
+func TestLoadNodeConfigRejectsNegativeLogFileRetentionDays(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_file_retention_days = -1\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected log file retention days error")
+	}
+}
+
+func TestLoadNodeConfigRejectsNegativeTCPLimit(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Network]\ntcp_limit = -1\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected tcp limit error")
 	}
 }
 

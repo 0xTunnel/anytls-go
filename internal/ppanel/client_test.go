@@ -1,6 +1,7 @@
 package ppanel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sirupsen/logrus"
 )
 
 func TestClientFetchConfigDecodesRawJSON(t *testing.T) {
@@ -139,6 +142,18 @@ func TestClientPushStatusAcceptsNoContent(t *testing.T) {
 	}
 }
 
+func TestNewClientWithProtocolOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClientWithProtocol("https://api.ppanel.dev", 1, "secret", "trojan")
+	if err != nil {
+		t.Fatalf("NewClientWithProtocol() error = %v", err)
+	}
+	if client.protocol != "trojan" {
+		t.Fatalf("client.protocol = %q, want %q", client.protocol, "trojan")
+	}
+}
+
 func TestClientReturnsHTTPErrorBody(t *testing.T) {
 	t.Parallel()
 
@@ -161,6 +176,47 @@ func TestClientReturnsHTTPErrorBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad request") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestClientDebugLogsAPIRequestsWithoutSecretKey(t *testing.T) {
+	oldOutput := logrus.StandardLogger().Out
+	oldLevel := logrus.GetLevel()
+	defer logrus.SetOutput(oldOutput)
+	defer logrus.SetLevel(oldLevel)
+
+	var buffer bytes.Buffer
+	logrus.SetOutput(&buffer)
+	logrus.SetLevel(logrus.DebugLevel)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"users": []map[string]any{},
+		}); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, 1, "super-secret")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if _, err := client.FetchUsers(context.Background()); err != nil {
+		t.Fatalf("FetchUsers() error = %v", err)
+	}
+
+	output := buffer.String()
+	if !strings.Contains(output, "panel api request completed") {
+		t.Fatalf("debug output = %q, want api request log", output)
+	}
+	if !strings.Contains(output, "/v1/server/user") {
+		t.Fatalf("debug output = %q, want request path", output)
+	}
+	if strings.Contains(output, "super-secret") {
+		t.Fatalf("debug output = %q, secret key leaked", output)
 	}
 }
 

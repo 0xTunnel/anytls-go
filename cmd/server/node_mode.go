@@ -4,11 +4,11 @@ import (
 	"anytls/internal/config"
 	"anytls/internal/node/state"
 	"anytls/internal/ppanel"
-	"anytls/proxy/padding"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
 	"time"
@@ -30,14 +30,27 @@ func fetchNodeSnapshot(ctx context.Context, client *ppanel.Client, userSnapshotP
 			eventLogger("node", logrus.Fields{"user_snapshot_path": userSnapshotPath}, "persist_user_snapshot_failed").WithError(err).Warn("persist user snapshot failed")
 		}
 	}
-	snapshot, err := state.BuildSnapshot(config, users)
+	adapter, err := selectProtocolAdapter(config.Protocol)
+	if err != nil {
+		return nil, fmt.Errorf("select protocol adapter: %w", err)
+	}
+	snapshot, err := adapter.BuildSnapshot(config, users)
 	if err != nil {
 		return nil, fmt.Errorf("build runtime snapshot: %w", err)
 	}
-	if snapshot.PaddingScheme != "" && !padding.UpdatePaddingScheme([]byte(snapshot.PaddingScheme)) {
-		return nil, fmt.Errorf("invalid padding scheme from panel")
-	}
 	return snapshot, nil
+}
+
+func (s *myServer) handleInboundConnection(ctx context.Context, conn net.Conn) {
+	adapter, err := s.currentProtocolAdapter()
+	if err != nil {
+		eventLogger("inbound", nil, "protocol_adapter_unavailable").WithError(err).Error("failed to resolve protocol adapter")
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return
+	}
+	adapter.HandleConn(ctx, conn, s)
 }
 
 func resolveListenAddr(listen string, port int) string {
@@ -86,14 +99,14 @@ func resolveUserSnapshotPath(nodeConfig *config.NodeConfig) string {
 	if nodeConfig == nil {
 		return ""
 	}
-	baseDir := nodeConfig.LogFileDir
-	if baseDir == "" && nodeConfig.Path != "" {
+	baseDir := ""
+	if nodeConfig.Path != "" {
 		baseDir = filepath.Dir(nodeConfig.Path)
 	}
 	if baseDir == "" {
 		return ""
 	}
-	return filepath.Join(baseDir, "ppanel-users.json")
+	return filepath.Join(baseDir, "users.json")
 }
 
 func (s *myServer) runReportLoop(ctx context.Context) {

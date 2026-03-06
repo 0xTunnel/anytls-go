@@ -83,7 +83,7 @@ func (r *serverRuntime) Serve(ctx context.Context) error {
 		go func() {
 			defer r.connWG.Done()
 			defer r.untrackConn(conn)
-			handleTcpConnection(ctx, conn, r.server)
+			r.server.handleInboundConnection(ctx, conn)
 		}()
 	}
 }

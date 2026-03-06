@@ -26,7 +26,7 @@ func TestRememberSnapshotSignature(t *testing.T) {
 	}
 }
 
-func TestResolveUserSnapshotPathPrefersLogDir(t *testing.T) {
+func TestResolveUserSnapshotPathUsesConfigDirEvenWhenLogDirConfigured(t *testing.T) {
 	t.Parallel()
 
 	nodeConfig := &config.NodeConfig{
@@ -34,7 +34,7 @@ func TestResolveUserSnapshotPathPrefersLogDir(t *testing.T) {
 		Path:       "/tmp/anytls/node.toml",
 	}
 
-	if got := resolveUserSnapshotPath(nodeConfig); got != "/tmp/anytls/logs/ppanel-users.json" {
+	if got := resolveUserSnapshotPath(nodeConfig); got != "/tmp/anytls/users.json" {
 		t.Fatalf("resolveUserSnapshotPath() = %q", got)
 	}
 }
@@ -44,7 +44,7 @@ func TestResolveUserSnapshotPathFallsBackToConfigDir(t *testing.T) {
 
 	nodeConfig := &config.NodeConfig{Path: "/tmp/anytls/node.toml"}
 
-	if got := resolveUserSnapshotPath(nodeConfig); got != "/tmp/anytls/ppanel-users.json" {
+	if got := resolveUserSnapshotPath(nodeConfig); got != "/tmp/anytls/users.json" {
 		t.Fatalf("resolveUserSnapshotPath() = %q", got)
 	}
 }
@@ -91,7 +91,7 @@ func TestFetchNodeSnapshotPersistsUsers(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "cache", "ppanel-users.json")
+	outputPath := filepath.Join(t.TempDir(), "cache", "users.json")
 	snapshot, err := fetchNodeSnapshot(context.Background(), client, outputPath)
 	if err != nil {
 		t.Fatalf("fetchNodeSnapshot() error = %v", err)
@@ -114,5 +114,41 @@ func TestFetchNodeSnapshotPersistsUsers(t *testing.T) {
 	}
 	if users.Users[0].UUID != "a3de8552-ba4f-4493-ad71-0611869ecd89" {
 		t.Fatalf("users.Users[0].UUID = %q", users.Users[0].UUID)
+	}
+}
+
+func TestFetchNodeSnapshotRejectsUnsupportedProtocol(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/server/config":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"basic":    map[string]any{},
+				"protocol": "trojan",
+				"config":   map[string]any{},
+			}); err != nil {
+				t.Fatalf("Encode(config) error = %v", err)
+			}
+		case "/v1/server/user":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{"users": []map[string]any{}}); err != nil {
+				t.Fatalf("Encode(users) error = %v", err)
+			}
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := ppanel.NewClient(server.URL, 1, "secret")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = fetchNodeSnapshot(context.Background(), client, "")
+	if err == nil {
+		t.Fatal("fetchNodeSnapshot() expected error")
 	}
 }

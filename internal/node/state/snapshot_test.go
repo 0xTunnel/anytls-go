@@ -101,3 +101,20 @@ func TestBuildSnapshotIgnoresTopLevelPaddingScheme(t *testing.T) {
 		t.Fatalf("BuildSnapshot() padding scheme = %q, want empty string", snapshot.PaddingScheme)
 	}
 }
+
+func TestBuildSnapshotKeepsProtocolForAdapterSelection(t *testing.T) {
+	config := &ppanel.ServerConfigResponse{
+		Protocol: "trojan",
+		Config: ppanel.AnyTLSConfig{
+			Port: 0,
+		},
+	}
+
+	snapshot, err := BuildSnapshot(config, []ppanel.ServerUser{{ID: 1, UUID: "uuid-1"}})
+	if err != nil {
+		t.Fatalf("BuildSnapshot() error = %v", err)
+	}
+	if snapshot.Protocol != "trojan" {
+		t.Fatalf("BuildSnapshot() protocol = %q, want %q", snapshot.Protocol, "trojan")
+	}
+}

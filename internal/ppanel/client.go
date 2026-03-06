@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 const defaultProtocol = "anytls"
@@ -26,6 +28,10 @@ type Client struct {
 }
 
 func NewClient(rawURL string, serverID int64, secretKey string) (*Client, error) {
+	return NewClientWithProtocol(rawURL, serverID, secretKey, defaultProtocol)
+}
+
+func NewClientWithProtocol(rawURL string, serverID int64, secretKey string, protocol string) (*Client, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return nil, fmt.Errorf("panel url is required")
 	}
@@ -42,12 +48,16 @@ func NewClient(rawURL string, serverID int64, secretKey string) (*Client, error)
 	if strings.TrimSpace(secretKey) == "" {
 		return nil, fmt.Errorf("secret key is required")
 	}
+	normalizedProtocol := strings.ToLower(strings.TrimSpace(protocol))
+	if normalizedProtocol == "" {
+		normalizedProtocol = defaultProtocol
+	}
 	return &Client{
 		baseURL: parsed,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		protocol:  defaultProtocol,
+		protocol:  normalizedProtocol,
 		serverID:  serverID,
 		secretKey: secretKey,
 	}, nil
@@ -91,11 +101,13 @@ func (c *Client) doRequest(ctx context.Context, method, requestPath string, body
 	endpoint.RawQuery = query.Encode()
 
 	var reader io.Reader
+	requestBytes := 0
 	if body != nil {
 		payload, err := json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("marshal request body: %w", err)
 		}
+		requestBytes = len(payload)
 		reader = bytes.NewReader(payload)
 	}
 
@@ -107,37 +119,74 @@ func (c *Client) doRequest(ctx context.Context, method, requestPath string, body
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	startedAt := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("perform request %s %s: %w", method, endpoint.String(), err)
+		c.logRequest(method, endpoint.Path, 0, time.Since(startedAt), requestBytes, 0, err)
+		return fmt.Errorf("perform request %s %s: %w", method, endpoint.Path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		if readErr != nil {
-			return fmt.Errorf("panel api %s %s returned %d and response body could not be read: %w", method, endpoint.Path, resp.StatusCode, readErr)
+			requestErr := fmt.Errorf("panel api %s %s returned %d and response body could not be read: %w", method, endpoint.Path, resp.StatusCode, readErr)
+			c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, 0, requestErr)
+			return requestErr
 		}
-		return fmt.Errorf("panel api %s %s returned %d: %s", method, endpoint.Path, resp.StatusCode, strings.TrimSpace(string(payload)))
+		requestErr := fmt.Errorf("panel api %s %s returned %d: %s", method, endpoint.Path, resp.StatusCode, strings.TrimSpace(string(payload)))
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, len(payload), requestErr)
+		return requestErr
 	}
 
 	if out == nil {
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, 0, nil)
 		return nil
 	}
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
-		return fmt.Errorf("read response body: %w", err)
+		requestErr := fmt.Errorf("read response body: %w", err)
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, 0, requestErr)
+		return requestErr
 	}
 	payload = bytes.TrimSpace(payload)
 	if len(payload) > maxResponseBodyBytes {
-		return fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
+		requestErr := fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, len(payload), requestErr)
+		return requestErr
 	}
 	if len(payload) == 0 || string(payload) == "null" {
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, len(payload), nil)
 		return nil
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
-		return fmt.Errorf("decode response body: %w", err)
+		requestErr := fmt.Errorf("decode response body: %w", err)
+		c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, len(payload), requestErr)
+		return requestErr
 	}
+	c.logRequest(method, endpoint.Path, resp.StatusCode, time.Since(startedAt), requestBytes, len(payload), nil)
 	return nil
+}
+
+func (c *Client) logRequest(method string, requestPath string, statusCode int, duration time.Duration, requestBytes int, responseBytes int, err error) {
+	fields := logrus.Fields{
+		"component":      "panel",
+		"event":          "api_request",
+		"method":         method,
+		"path":           requestPath,
+		"server_id":      c.serverID,
+		"duration_ms":    duration.Milliseconds(),
+		"request_bytes":  requestBytes,
+		"response_bytes": responseBytes,
+	}
+	if statusCode > 0 {
+		fields["status_code"] = statusCode
+	}
+	entry := logrus.WithFields(fields)
+	if err != nil {
+		entry.WithError(err).Warn("panel api request failed")
+		return
+	}
+	entry.Debug("panel api request completed")
 }

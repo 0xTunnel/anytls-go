@@ -39,14 +39,17 @@ func TestConfigureLoggingCreatesFileAndFormatter(t *testing.T) {
 	tempDir := t.TempDir()
 	oldOutput := logrus.StandardLogger().Out
 	oldFormatter := logrus.StandardLogger().Formatter
+	oldLogWriterNow := logWriterNow
 	oldLogTimeZone := logTimeZone
 	oldLogUseColor := logUseColor
 	oldStdoutIsTerminal := stdoutIsTerminal
 	defer logrus.SetOutput(oldOutput)
 	defer logrus.SetFormatter(oldFormatter)
+	defer func() { logWriterNow = oldLogWriterNow }()
 	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
 	defer func() { stdoutIsTerminal = oldStdoutIsTerminal }()
 	stdoutIsTerminal = func() bool { return true }
+	logWriterNow = func() time.Time { return time.Date(2026, 3, 7, 0, 0, 0, 0, time.UTC) }
 
 	logFile, err := configureLogging(&config.NodeConfig{LogFileDir: tempDir, TimeZone: "Asia/Shanghai"})
 	if err != nil {
@@ -54,7 +57,7 @@ func TestConfigureLoggingCreatesFileAndFormatter(t *testing.T) {
 	}
 	defer logFile.Close()
 
-	logPath := filepath.Join(tempDir, "anytls-server.log")
+	logPath := filepath.Join(tempDir, "anytls-server-2026-03-07.log")
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("configureLogging() did not create log file: %v", err)
 	}

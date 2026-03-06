@@ -21,6 +21,10 @@ import (
 )
 
 func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
+	handleAnyTLSConnection(ctx, c, s)
+}
+
+func handleAnyTLSConnection(ctx context.Context, c net.Conn, runtime protocolRuntime) {
 	remoteAddr := ""
 	remoteIP := ""
 	if c != nil && c.RemoteAddr() != nil {
@@ -39,7 +43,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		}
 	}()
 
-	c = tls.Server(c, s.tlsConfig)
+	c = tls.Server(c, runtime.TLSConfig())
 	defer c.Close()
 
 	b := buf.NewPacket()
@@ -68,37 +72,54 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 			}
 		})
 	}()
-	if s.IsNodeMode() {
-		snapshot := s.snapshotStore.Load()
-		if snapshot == nil {
+	if runtime.IsNodeMode() {
+		access, err := runtime.authenticateByHash(authHash, remoteAddr, remoteIP)
+		if errors.Is(err, errSnapshotUnavailable) {
 			entry.WithField("event", "missing_snapshot").Error("node snapshot is empty")
 			b.Resize(0, n)
 			fallback(ctx, c, entry, "missing_snapshot")
 			return
 		}
-		user, ok := snapshot.LookupAuthHash(authHash)
-		if !ok {
+		if errors.Is(err, errAuthNotMatched) {
 			b.Resize(0, n)
 			fallback(ctx, c, entry, "auth_not_matched")
 			return
 		}
-		if err := s.deviceTracker.Acquire(user.ID, remoteIP, user.DeviceLimit); err != nil {
-			rejectEntry := entry.WithFields(logrus.Fields{"user_id": user.ID, "device_limit": user.DeviceLimit})
-			if errors.Is(err, state.ErrDeviceLimitExceeded) {
-				rejectEntry.WithField("event", "device_reject").Warn("device limit exceeded")
-			} else {
-				rejectEntry.WithField("event", "device_reject").WithError(err).Warn("reject user due to tracker error")
+		if err != nil {
+			rejectFields := logrus.Fields{}
+			if access != nil {
+				rejectFields["user_id"] = access.User.ID
 			}
+			rejectEntry := entry.WithFields(rejectFields)
+			if errors.Is(err, state.ErrDeviceLimitExceeded) {
+				if access != nil {
+					rejectEntry = rejectEntry.WithField("device_limit", access.User.DeviceLimit)
+				}
+				rejectEntry.WithField("event", "device_reject").Warn("device limit exceeded")
+				b.Resize(0, n)
+				fallback(ctx, c, rejectEntry, "device_reject")
+				return
+			}
+			if errors.Is(err, state.ErrTCPLimitExceeded) {
+				rejectEntry.WithField("event", "tcp_limit_reject").Warn("tcp limit exceeded")
+				b.Resize(0, n)
+				fallback(ctx, c, rejectEntry, "tcp_limit_reject")
+				return
+			}
+			rejectEntry.WithField("event", "auth_reject").WithError(err).Warn("reject user due to tracker error")
 			b.Resize(0, n)
-			fallback(ctx, c, rejectEntry, "device_reject")
+			fallback(ctx, c, rejectEntry, "auth_reject")
 			return
 		}
-		userID = user.ID
-		connTag = buildConnectionTag(userID, remoteAddr)
-		entry = entry.WithFields(logrus.Fields{"user_id": user.ID, "conn_tag": connTag})
-		release = func() {
-			s.deviceTracker.Release(user.ID, remoteIP)
+		if access == nil {
+			b.Resize(0, n)
+			fallback(ctx, c, entry, "auth_not_matched")
+			return
 		}
+		userID = access.User.ID
+		connTag = access.ConnTag
+		entry = entry.WithFields(logrus.Fields{"user_id": access.User.ID, "conn_tag": connTag})
+		release = access.Release
 	}
 	by, err := b.ReadBytes(2)
 	if err != nil {
@@ -136,13 +157,13 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		eventLogger("inbound", requestFields, "access_target").Debug(formatAccessTargetMessageWithTag(connTag, userID, destination.String()))
 
 		if strings.Contains(destination.String(), "udp-over-tcp.arpa") {
-			proxyOutboundUoT(ctx, stream, destination, requestFields, s.networkTimeouts)
+			proxyOutboundUoT(ctx, stream, destination, requestFields, runtime.NetworkTimeouts())
 		} else {
-			proxyOutboundTCP(ctx, stream, destination, requestFields, s.networkTimeouts)
+			proxyOutboundTCP(ctx, stream, destination, requestFields, runtime.NetworkTimeouts())
 		}
 	}, &padding.DefaultPaddingFactory)
 	if userID > 0 {
-		session.SetUserContext(userID, s.traffic)
+		session.SetUserContext(userID, runtime.TrafficRecorder())
 		session.SetCloseHook(func() {
 			releaseOnce.Do(func() {
 				if release != nil {
