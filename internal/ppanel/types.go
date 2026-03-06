@@ -5,12 +5,6 @@ import (
 	"strings"
 )
 
-type ResponseEnvelope[T any] struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data T      `json:"data"`
-}
-
 type ServerBasic struct {
 	PushInterval int64 `json:"push_interval"`
 	PullInterval int64 `json:"pull_interval"`

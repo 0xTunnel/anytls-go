@@ -15,6 +15,8 @@ import (
 
 const defaultProtocol = "anytls"
 
+const maxResponseBodyBytes = 1 << 20
+
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
@@ -112,33 +114,30 @@ func (c *Client) doRequest(ctx context.Context, method, requestPath string, body
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		if readErr != nil {
+			return fmt.Errorf("panel api %s %s returned %d and response body could not be read: %w", method, endpoint.Path, resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("panel api %s %s returned %d: %s", method, endpoint.Path, resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 
 	if out == nil {
-		var envelope ResponseEnvelope[json.RawMessage]
-		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-			return fmt.Errorf("decode response envelope: %w", err)
-		}
-		if envelope.Code != 0 && envelope.Code != http.StatusOK {
-			return fmt.Errorf("panel api %s %s failed: code=%d msg=%s", method, endpoint.Path, envelope.Code, envelope.Msg)
-		}
 		return nil
 	}
 
-	var envelope ResponseEnvelope[json.RawMessage]
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return fmt.Errorf("decode response envelope: %w", err)
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
 	}
-	if envelope.Code != 0 && envelope.Code != http.StatusOK {
-		return fmt.Errorf("panel api %s %s failed: code=%d msg=%s", method, endpoint.Path, envelope.Code, envelope.Msg)
+	payload = bytes.TrimSpace(payload)
+	if len(payload) > maxResponseBodyBytes {
+		return fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
 	}
-	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+	if len(payload) == 0 || string(payload) == "null" {
 		return nil
 	}
-	if err := json.Unmarshal(envelope.Data, out); err != nil {
-		return fmt.Errorf("decode response data: %w", err)
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("decode response body: %w", err)
 	}
 	return nil
 }
