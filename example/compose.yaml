@@ -1,0 +1,8 @@
+services:
+  anytls-ppanel:
+    image: ${ANYTLS_IMAGE:-ghcr.io/0xtunnel/anytls-ppanel:latest}
+    container_name: anytls-ppanel
+    network_mode: host
+    restart: always
+    volumes:
+      - .:/etc/anytls
