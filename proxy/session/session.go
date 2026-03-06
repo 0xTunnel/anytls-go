@@ -224,7 +224,7 @@ func (s *Session) recvLoop() error {
 			m := util.StringMapFromBytes(buffer)
 			paddingF := s.padding.Load()
 			if m["padding-md5"] != paddingF.Md5 {
-				s.logger("update_padding_scheme", nil).Debug("client padding scheme differs, sending update")
+				s.logDiagnostic("update_padding_scheme", nil, "client padding scheme differs, sending update")
 				f := newFrame(cmdUpdatePaddingScheme, 0)
 				f.data = paddingF.RawScheme
 				if _, err := s.writeControlFrame(f); err != nil {
@@ -234,7 +234,7 @@ func (s *Session) recvLoop() error {
 			}
 			if v, err := strconv.Atoi(m["v"]); err == nil && v >= 2 {
 				s.peerVersion = byte(v)
-				s.logger("peer_version_negotiated", logrus.Fields{"peer_version": v}).Debug("negotiated peer protocol version")
+				s.logDiagnostic("peer_version_negotiated", logrus.Fields{"peer_version": v}, "negotiated peer protocol version")
 				f := newFrame(cmdServerSettings, 0)
 				f.data = util.StringMap{"v": "2"}.ToBytes()
 				if _, err := s.writeControlFrame(f); err != nil {
@@ -334,4 +334,15 @@ func (s *Session) writeConn(b []byte) (int, error) {
 	s.connLock.Lock()
 	defer s.connLock.Unlock()
 	return s.conn.Write(b)
+}
+
+func (s *Session) logDiagnostic(event string, fields logrus.Fields, message string) {
+	if !diagnosticLoggingEnabled() {
+		return
+	}
+	s.logger(event, fields).Debug(message)
+}
+
+func diagnosticLoggingEnabled() bool {
+	return util.DiagnosticLoggingEnabled()
 }

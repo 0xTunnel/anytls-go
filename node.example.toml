@@ -10,3 +10,4 @@ key_file = "/etc/anytls/key.pem"
 [Config]
 log_level = "info"
 log_file_dir = "/etc/anytls/log"
+timezone = "UTC+8"

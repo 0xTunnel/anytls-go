@@ -1,17 +1,22 @@
 package main
 
 import (
+	"anytls/internal/config"
 	"anytls/internal/node/state"
 	"anytls/internal/ppanel"
 	"anytls/proxy/padding"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-func fetchNodeSnapshot(ctx context.Context, client *ppanel.Client) (*state.Snapshot, error) {
+func fetchNodeSnapshot(ctx context.Context, client *ppanel.Client, userSnapshotPath string) (*state.Snapshot, error) {
 	config, err := client.FetchConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch server config: %w", err)
@@ -19,6 +24,11 @@ func fetchNodeSnapshot(ctx context.Context, client *ppanel.Client) (*state.Snaps
 	users, err := client.FetchUsers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch server users: %w", err)
+	}
+	if userSnapshotPath != "" {
+		if err := ppanel.WriteUserList(userSnapshotPath, users); err != nil {
+			eventLogger("node", logrus.Fields{"user_snapshot_path": userSnapshotPath}, "persist_user_snapshot_failed").WithError(err).Warn("persist user snapshot failed")
+		}
 	}
 	snapshot, err := state.BuildSnapshot(config, users)
 	if err != nil {
@@ -47,7 +57,7 @@ func (s *myServer) runSyncLoop(ctx context.Context) {
 			return
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		snapshot, err := fetchNodeSnapshot(requestCtx, s.panelClient)
+		snapshot, err := fetchNodeSnapshot(requestCtx, s.panelClient, s.userSnapshotPath)
 		cancel()
 		if err != nil {
 			eventLogger("node", logrus.Fields{"pull_interval": interval.String()}, "sync_snapshot_failed").WithError(err).Error("sync node snapshot failed")
@@ -58,12 +68,32 @@ func (s *myServer) runSyncLoop(ctx context.Context) {
 			continue
 		}
 		s.snapshotStore.Store(snapshot)
-		eventLogger("node", logrus.Fields{
+		fields := logrus.Fields{
+			"port":          snapshot.Port,
 			"pull_interval": interval.String(),
 			"push_interval": snapshot.PushInterval.String(),
 			"user_count":    len(snapshot.UsersByID),
-		}, "sync_snapshot").Info("node snapshot updated")
+		}
+		if s.rememberSnapshotSignature(snapshotSignature(snapshot)) {
+			eventLogger("node", fields, "sync_snapshot").Info("node snapshot updated")
+			continue
+		}
+		logDiagnostic("node", fields, "sync_snapshot_unchanged", "node snapshot unchanged")
 	}
+}
+
+func resolveUserSnapshotPath(nodeConfig *config.NodeConfig) string {
+	if nodeConfig == nil {
+		return ""
+	}
+	baseDir := nodeConfig.LogFileDir
+	if baseDir == "" && nodeConfig.Path != "" {
+		baseDir = filepath.Dir(nodeConfig.Path)
+	}
+	if baseDir == "" {
+		return ""
+	}
+	return filepath.Join(baseDir, "ppanel-users.json")
 }
 
 func (s *myServer) runReportLoop(ctx context.Context) {
@@ -97,12 +127,12 @@ func (s *myServer) reportOnce(ctx context.Context) error {
 	if err := s.panelClient.PushStatus(ctx, status); err != nil {
 		return fmt.Errorf("push server status: %w", err)
 	}
-	eventLogger("node", logrus.Fields{
+	logDiagnostic("node", logrus.Fields{
 		"online_user_count": len(s.deviceTracker.OnlineEntries()),
 		"cpu":               status.CPU,
 		"mem":               status.Mem,
 		"disk":              status.Disk,
-	}, "report_state").Debug("reported node state")
+	}, "report_state", "reported node state")
 	return nil
 }
 
@@ -115,7 +145,9 @@ func (s *myServer) pushOnlineUsers(ctx context.Context) error {
 	if err := s.panelClient.PushOnlineUsers(ctx, users); err != nil {
 		return fmt.Errorf("push online users: %w", err)
 	}
-	eventLogger("node", logrus.Fields{"online_user_count": len(users)}, "push_online_users").Debug("reported online users")
+	if len(users) > 0 {
+		logDiagnostic("node", logrus.Fields{"online_user_count": len(users)}, "push_online_users", "reported online users")
+	}
 	return nil
 }
 
@@ -136,8 +168,28 @@ func (s *myServer) pushTraffic(ctx context.Context) error {
 		s.traffic.Restore(pending)
 		return fmt.Errorf("push user traffic: %w", err)
 	}
-	eventLogger("node", logrus.Fields{"traffic_user_count": len(traffic)}, "push_user_traffic").Debug("reported user traffic")
+	logDiagnostic("node", logrus.Fields{"traffic_user_count": len(traffic)}, "push_user_traffic", "reported user traffic")
 	return nil
+}
+
+func snapshotSignature(snapshot *state.Snapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%s|%d|%s|%s|%d|%s|%d", snapshot.Protocol, snapshot.Port, snapshot.PullInterval, snapshot.PushInterval, snapshot.TrafficReportThreshold, snapshot.PaddingScheme, len(snapshot.UsersByID))
+	userIDs := make([]int64, 0, len(snapshot.UsersByID))
+	for userID := range snapshot.UsersByID {
+		userIDs = append(userIDs, userID)
+	}
+	sort.Slice(userIDs, func(i, j int) bool {
+		return userIDs[i] < userIDs[j]
+	})
+	for _, userID := range userIDs {
+		user := snapshot.UsersByID[userID]
+		_, _ = fmt.Fprintf(hash, "|%d|%s|%d|%d", user.ID, user.UUID, user.SpeedLimit, user.DeviceLimit)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func waitForNextTick(ctx context.Context, interval time.Duration) bool {

@@ -39,15 +39,16 @@ key_file = "/etc/anytls/key.pem"
 [Config]
 log_level = "info"
 log_file_dir = "/etc/anytls/log"
+timezone = "UTC+8"
 ```
 
-其中 `Config.log_file_dir` 为可选项；设置后，服务端会同时输出到标准输出和该目录下的 `anytls-server.log`。
+其中 `Config.log_file_dir` 为可选项；设置后，服务端会同时输出到标准输出和该目录下的 `anytls-server.log`。`/v1/server/user` 拉取到的用户列表也会以格式化 JSON 形式保存为同目录下的 `ppanel-users.json`；如果未设置 `Config.log_file_dir`，则默认保存到节点配置文件所在目录。`Config.timezone` 也为可选项，默认使用 `UTC+8`，可填写 `UTC+8` 这类 UTC 偏移格式，或 `Asia/Shanghai` 这类 IANA 时区名称。
 
 ### 日志说明
 
 当前服务端日志统一使用 `debug`、`info`、`warn`、`error` 四个等级：
 
-- `debug`：联调用细节，例如 fallback、目标地址读取失败、padding 协商、上报成功等。
+- `debug`：联调用细节，例如 fallback、目标地址读取失败等。高频成功路径日志默认会收敛，避免长期运行时刷屏。
 - `info`：状态变化和里程碑事件，例如服务启动、监听成功、节点快照同步成功、正常停机等。
 - `warn`：请求级异常但服务仍继续，例如设备数超限、客户端未先发 settings、出站拨号失败、收到客户端 alert 等。
 - `error`：服务级失败或明显异常，例如快照为空、同步/上报失败、不可恢复的监听错误、panic 恢复等。
@@ -59,6 +60,8 @@ log_file_dir = "/etc/anytls/log"
 - `user_id`、`remote_ip`、`target`：按场景补充的排障字段
 
 服务器联调阶段建议将 `log_level` 设为 `debug`；稳定运行后建议切回 `info`。
+
+如需临时查看高频诊断日志，可额外设置环境变量 `ANYTLS_DEBUG_VERBOSE=1`。启用后会恢复这类 `debug` 日志，例如版本协商、padding 更新、周期性状态上报和未变化的快照同步。
 
 ### 示例启动
 

@@ -17,7 +17,7 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 		t.Fatalf("WriteFile(key) error = %v", err)
 	}
 	configPath := filepath.Join(tempDir, "node.toml")
-	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\n")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 12\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\nlog_level = \"warning\"\nlog_file_dir = \"./log\"\ntimezone = \"Asia/Shanghai\"\n")
 	if err := os.WriteFile(configPath, content, 0644); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
@@ -46,6 +46,9 @@ func TestLoadNodeConfigFromTOML(t *testing.T) {
 	}
 	if config.LogFileDir != filepath.Join(tempDir, "log") {
 		t.Fatalf("LogFileDir = %q", config.LogFileDir)
+	}
+	if config.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("TimeZone = %q", config.TimeZone)
 	}
 }
 
@@ -79,6 +82,27 @@ func TestLoadNodeConfigRejectsInvalidLogLevel(t *testing.T) {
 
 	if _, err := LoadNodeConfig(configPath); err == nil {
 		t.Fatal("LoadNodeConfig() expected log level error")
+	}
+}
+
+func TestLoadNodeConfigRejectsInvalidTimeZone(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "cert.pem")
+	keyPath := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile(key) error = %v", err)
+	}
+	configPath := filepath.Join(tempDir, "node.toml")
+	content := []byte("[Panel]\nwebapi_url = \"https://api.ppanel.dev\"\nwebapi_key = \"secret\"\nnode_id = 1\n\n[TLS]\ncert_file = \"./cert.pem\"\nkey_file = \"./key.pem\"\n\n[Config]\ntimezone = \"Mars/Base\"\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	if _, err := LoadNodeConfig(configPath); err == nil {
+		t.Fatal("LoadNodeConfig() expected time zone error")
 	}
 }
 

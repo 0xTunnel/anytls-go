@@ -27,10 +27,12 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		remoteAddr = c.RemoteAddr().String()
 		remoteIP = remoteIPFromAddr(c.RemoteAddr())
 	}
+	connTag := ""
 	entry := eventLogger("inbound", logrus.Fields{
 		"remote_addr": remoteAddr,
 		"remote_ip":   remoteIP,
 	}, "connection_started")
+	entry.WithField("event", "connection_start").Debug(formatConnectionLifecycleMessage("", remoteAddr, "start"))
 	defer func() {
 		if r := recover(); r != nil {
 			entry.WithField("event", "panic").WithField("panic", r).Errorln(string(debug.Stack()))
@@ -92,7 +94,8 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 			return
 		}
 		userID = user.ID
-		entry = entry.WithField("user_id", user.ID)
+		connTag = buildConnectionTag(userID, remoteAddr)
+		entry = entry.WithFields(logrus.Fields{"user_id": user.ID, "conn_tag": connTag})
 		release = func() {
 			s.deviceTracker.Release(user.ID, remoteIP)
 		}
@@ -127,10 +130,15 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 			return
 		}
 
+		requestFields := cloneLogFields(entry.Data)
+		requestFields["stream_id"] = stream.StreamID()
+		requestFields["target"] = destination.String()
+		eventLogger("inbound", requestFields, "access_target").Debug(formatAccessTargetMessageWithTag(connTag, userID, destination.String()))
+
 		if strings.Contains(destination.String(), "udp-over-tcp.arpa") {
-			proxyOutboundUoT(ctx, stream, destination)
+			proxyOutboundUoT(ctx, stream, destination, requestFields)
 		} else {
-			proxyOutboundTCP(ctx, stream, destination)
+			proxyOutboundTCP(ctx, stream, destination, requestFields)
 		}
 	}, &padding.DefaultPaddingFactory)
 	if userID > 0 {
@@ -144,6 +152,7 @@ func handleTcpConnection(ctx context.Context, c net.Conn, s *myServer) {
 		})
 	}
 	session.Run()
+	entry.WithField("event", "connection_end").Debug(formatConnectionLifecycleMessage(connTag, remoteAddr, "end"))
 	session.Close()
 }
 

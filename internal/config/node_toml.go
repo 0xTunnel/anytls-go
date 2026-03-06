@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -17,6 +19,7 @@ type NodeConfig struct {
 	TLSKeyFile  string
 	LogLevel    string
 	LogFileDir  string
+	TimeZone    string
 	Path        string
 }
 
@@ -33,6 +36,7 @@ type nodeConfigFile struct {
 	Config struct {
 		LogLevel   string `toml:"log_level"`
 		LogFileDir string `toml:"log_file_dir"`
+		TimeZone   string `toml:"timezone"`
 	} `toml:"Config"`
 }
 
@@ -63,6 +67,7 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 		TLSKeyFile:  resolvePath(configDir, raw.TLS.KeyFile),
 		LogLevel:    strings.ToLower(strings.TrimSpace(raw.Config.LogLevel)),
 		LogFileDir:  resolveOptionalPath(configDir, raw.Config.LogFileDir),
+		TimeZone:    strings.TrimSpace(raw.Config.TimeZone),
 		Path:        absPath,
 	}
 
@@ -91,6 +96,11 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 		config.LogLevel, err = parseLogLevel(config.LogLevel)
 		if err != nil {
 			return nil, fmt.Errorf("config parse Config.log_level: %w", err)
+		}
+	}
+	if config.TimeZone != "" {
+		if _, err := parseTimeZone(config.TimeZone); err != nil {
+			return nil, fmt.Errorf("config parse Config.timezone: %w", err)
 		}
 	}
 	return config, nil
@@ -134,4 +144,44 @@ func parseLogLevel(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported value %q", value)
 	}
+}
+
+func parseTimeZone(value string) (*time.Location, error) {
+	timeZone := strings.TrimSpace(value)
+	if timeZone == "" {
+		return time.FixedZone("UTC+8", 8*60*60), nil
+	}
+	if location, ok := parseUTCOffsetLocation(timeZone); ok {
+		return location, nil
+	}
+	location, err := time.LoadLocation(timeZone)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported value %q", value)
+	}
+	return location, nil
+}
+
+func ParseTimeZoneForLogging(value string) (*time.Location, error) {
+	return parseTimeZone(value)
+}
+
+func parseUTCOffsetLocation(value string) (*time.Location, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasPrefix(upper, "UTC") || len(upper) < 4 {
+		return nil, false
+	}
+	sign := upper[3]
+	if sign != '+' && sign != '-' {
+		return nil, false
+	}
+	offsetText := strings.TrimSpace(upper[4:])
+	hours, err := strconv.Atoi(offsetText)
+	if err != nil || hours < 0 || hours > 14 {
+		return nil, false
+	}
+	offsetSeconds := hours * 60 * 60
+	if sign == '-' {
+		offsetSeconds = -offsetSeconds
+	}
+	return time.FixedZone("UTC"+string(sign)+strconv.Itoa(hours), offsetSeconds), true
 }

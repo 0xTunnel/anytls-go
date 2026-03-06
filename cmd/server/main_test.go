@@ -2,10 +2,13 @@ package main
 
 import (
 	"anytls/internal/config"
+	"anytls/internal/node/state"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -35,10 +38,16 @@ func TestConfigureLoggingCreatesFileAndFormatter(t *testing.T) {
 	tempDir := t.TempDir()
 	oldOutput := logrus.StandardLogger().Out
 	oldFormatter := logrus.StandardLogger().Formatter
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	oldStdoutIsTerminal := stdoutIsTerminal
 	defer logrus.SetOutput(oldOutput)
 	defer logrus.SetFormatter(oldFormatter)
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	defer func() { stdoutIsTerminal = oldStdoutIsTerminal }()
+	stdoutIsTerminal = func() bool { return true }
 
-	logFile, err := configureLogging(&config.NodeConfig{LogFileDir: tempDir})
+	logFile, err := configureLogging(&config.NodeConfig{LogFileDir: tempDir, TimeZone: "Asia/Shanghai"})
 	if err != nil {
 		t.Fatalf("configureLogging() error = %v", err)
 	}
@@ -49,21 +58,30 @@ func TestConfigureLoggingCreatesFileAndFormatter(t *testing.T) {
 		t.Fatalf("configureLogging() did not create log file: %v", err)
 	}
 
-	formatter, ok := logrus.StandardLogger().Formatter.(*logrus.TextFormatter)
+	formatter, ok := logrus.StandardLogger().Formatter.(*consoleFormatter)
 	if !ok {
-		t.Fatalf("configureLogging() formatter type = %T, want *logrus.TextFormatter", logrus.StandardLogger().Formatter)
+		t.Fatalf("configureLogging() formatter type = %T, want *consoleFormatter", logrus.StandardLogger().Formatter)
 	}
-	if !formatter.FullTimestamp {
-		t.Fatal("configureLogging() did not enable full timestamp")
+	if formatter == nil {
+		t.Fatal("configureLogging() returned nil formatter")
 	}
-	if !formatter.DisableColors {
-		t.Fatal("configureLogging() did not disable colors")
+	if configuredLogTimeZone() != "Asia/Shanghai" {
+		t.Fatalf("configuredLogTimeZone() = %q, want %q", configuredLogTimeZone(), "Asia/Shanghai")
+	}
+	if configuredLogColorEnabled() {
+		t.Fatal("configuredLogColorEnabled() = true, want false when log file is enabled")
 	}
 }
 
 func TestConfigureLoggingNoopWhenConfigMissing(t *testing.T) {
 	oldOutput := logrus.StandardLogger().Out
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	oldStdoutIsTerminal := stdoutIsTerminal
 	defer logrus.SetOutput(oldOutput)
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	defer func() { stdoutIsTerminal = oldStdoutIsTerminal }()
+	stdoutIsTerminal = func() bool { return true }
 	logrus.SetOutput(io.Discard)
 
 	logFile, err := configureLogging(nil)
@@ -81,6 +99,12 @@ func TestConfigureLoggingNoopWhenConfigMissing(t *testing.T) {
 	if logFile != nil {
 		t.Fatal("configureLogging(empty) returned unexpected file")
 	}
+	if configuredLogTimeZone() != "UTC+8" {
+		t.Fatalf("configuredLogTimeZone() = %q, want default UTC+8", configuredLogTimeZone())
+	}
+	if !configuredLogColorEnabled() {
+		t.Fatal("configuredLogColorEnabled() = false, want true without file logging")
+	}
 }
 
 func TestEventLoggerMergesFields(t *testing.T) {
@@ -97,5 +121,185 @@ func TestEventLoggerMergesFields(t *testing.T) {
 	}
 	if _, ok := entry.Data["missing"]; ok {
 		t.Fatal("eventLogger() returned unexpected field")
+	}
+}
+
+func TestDiagnosticLoggingEnabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "empty", value: "", want: false},
+		{name: "numeric true", value: "1", want: true},
+		{name: "text true", value: "true", want: true},
+		{name: "yes alias", value: "yes", want: true},
+		{name: "on alias", value: "on", want: true},
+		{name: "numeric false", value: "0", want: false},
+		{name: "text false", value: "false", want: false},
+		{name: "invalid", value: "verbose", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ANYTLS_DEBUG_VERBOSE", tt.value)
+			if got := diagnosticLoggingEnabled(); got != tt.want {
+				t.Fatalf("diagnosticLoggingEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSnapshotSignatureStableAndSensitiveToChanges(t *testing.T) {
+	base := &state.Snapshot{
+		Protocol:               "anytls",
+		Port:                   443,
+		PullInterval:           time.Minute,
+		PushInterval:           2 * time.Minute,
+		TrafficReportThreshold: 4096,
+		PaddingScheme:          "pad-v1",
+		UsersByID: map[int64]state.User{
+			1: {ID: 1, UUID: "user-1", SpeedLimit: 10, DeviceLimit: 1},
+			2: {ID: 2, UUID: "user-2", SpeedLimit: 20, DeviceLimit: 2},
+		},
+	}
+
+	clone := &state.Snapshot{
+		Protocol:               base.Protocol,
+		Port:                   base.Port,
+		PullInterval:           base.PullInterval,
+		PushInterval:           base.PushInterval,
+		TrafficReportThreshold: base.TrafficReportThreshold,
+		PaddingScheme:          base.PaddingScheme,
+		UsersByID: map[int64]state.User{
+			2: {ID: 2, UUID: "user-2", SpeedLimit: 20, DeviceLimit: 2},
+			1: {ID: 1, UUID: "user-1", SpeedLimit: 10, DeviceLimit: 1},
+		},
+	}
+
+	if got, want := snapshotSignature(base), snapshotSignature(clone); got != want {
+		t.Fatalf("snapshotSignature() = %q, want stable signature %q", got, want)
+	}
+
+	clone.UsersByID[2] = state.User{ID: 2, UUID: "user-2", SpeedLimit: 30, DeviceLimit: 2}
+	if snapshotSignature(base) == snapshotSignature(clone) {
+		t.Fatal("snapshotSignature() did not change after user data change")
+	}
+}
+
+func TestLogFormatterConvertsToUTC8(t *testing.T) {
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	setLogFormatState(time.FixedZone("UTC+8", 8*60*60), false)
+
+	formatter, ok := newLogFormatter().(*consoleFormatter)
+	if !ok {
+		t.Fatalf("newLogFormatter() type = %T, want *consoleFormatter", newLogFormatter())
+	}
+
+	entry := logrus.NewEntry(logrus.New())
+	entry.Level = logrus.InfoLevel
+	entry.Message = "hello"
+	entry.Time = time.Date(2026, 3, 6, 9, 10, 27, 0, time.UTC)
+
+	formatted, err := formatter.Format(entry)
+	if err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	output := string(formatted)
+	if !strings.Contains(output, `2026/03/06 17:10:27 INFO - hello`) {
+		t.Fatalf("formatted time = %q, want console timestamp and level prefix", output)
+	}
+}
+
+func TestLogFormatterOmitsDataFieldsByDefault(t *testing.T) {
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	setLogFormatState(time.FixedZone("UTC+8", 8*60*60), false)
+
+	formatter := newLogFormatter()
+	entry := logrus.NewEntry(logrus.New())
+	entry.Level = logrus.DebugLevel
+	entry.Message = "node config loaded"
+	entry.Time = time.Date(2026, 3, 6, 9, 10, 27, 0, time.UTC)
+	entry.Data = logrus.Fields{
+		"conn_tag":  "{1:49208}",
+		"remote_ip": "39.64.247.198",
+		"target":    "www.google.com:443",
+		"event":     "load_config",
+		"node_id":   1,
+		"component": "server",
+		"extra":     "z",
+	}
+
+	formatted, err := formatter.Format(entry)
+	if err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	output := string(formatted)
+	want := "2026/03/06 17:10:27 DEBUG - node config loaded"
+	if !strings.Contains(output, want) {
+		t.Fatalf("formatted output = %q, want substring %q", output, want)
+	}
+	if strings.Contains(output, "conn_tag=") || strings.Contains(output, "remote_ip=") || strings.Contains(output, "target=") {
+		t.Fatalf("formatted output = %q, want soga style without structured field dump", output)
+	}
+	if strings.Contains(output, "\x1b[") {
+		t.Fatalf("formatted output = %q, want no color when disabled", output)
+	}
+}
+
+func TestLogFormatterIncludesErrorField(t *testing.T) {
+	oldLogTimeZone := logTimeZone
+	oldLogUseColor := logUseColor
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	setLogFormatState(time.FixedZone("UTC+8", 8*60*60), false)
+
+	formatter := newLogFormatter()
+	entry := logrus.NewEntry(logrus.New())
+	entry.Level = logrus.ErrorLevel
+	entry.Message = "dial failed"
+	entry.Time = time.Date(2026, 3, 6, 9, 10, 27, 0, time.UTC)
+	entry.Data = logrus.Fields{
+		logrus.ErrorKey: "i/o timeout",
+	}
+
+	formatted, err := formatter.Format(entry)
+	if err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	output := string(formatted)
+	if !strings.Contains(output, "ERROR - dial failed error: i/o timeout") {
+		t.Fatalf("formatted output = %q, want error suffix", output)
+	}
+}
+
+func TestFormatLevelUsesColorWhenEnabled(t *testing.T) {
+	oldLogUseColor := logUseColor
+	oldLogTimeZone := logTimeZone
+	defer setLogFormatState(oldLogTimeZone, oldLogUseColor)
+	setLogFormatState(oldLogTimeZone, true)
+
+	formatted := formatLevel(logrus.ErrorLevel, true)
+	if !strings.Contains(formatted, "ERROR") {
+		t.Fatalf("formatLevel() = %q, want error label", formatted)
+	}
+	if !strings.Contains(formatted, "\x1b[") {
+		t.Fatalf("formatLevel() = %q, want ansi color code", formatted)
+	}
+	if !strings.Contains(formatted, "\x1b[0m") {
+		t.Fatalf("formatLevel() = %q, want ansi reset code", formatted)
+	}
+}
+
+func TestShouldUseLogColorRequiresTerminal(t *testing.T) {
+	oldStdoutIsTerminal := stdoutIsTerminal
+	defer func() { stdoutIsTerminal = oldStdoutIsTerminal }()
+	stdoutIsTerminal = func() bool { return false }
+
+	if shouldUseLogColor(&config.NodeConfig{}) {
+		t.Fatal("shouldUseLogColor() = true, want false when stdout is not a terminal")
 	}
 }

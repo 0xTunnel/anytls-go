@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -159,5 +161,70 @@ func TestClientReturnsHTTPErrorBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad request") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestWriteUserListWritesPrettyJSON(t *testing.T) {
+	t.Parallel()
+
+	outputPath := filepath.Join(t.TempDir(), "cache", "ppanel-users.json")
+	users := []ServerUser{{ID: 1, UUID: "a3de8552-ba4f-4493-ad71-0611869ecd89", SpeedLimit: 1073741824, DeviceLimit: 3}}
+
+	if err := WriteUserList(outputPath, users); err != nil {
+		t.Fatalf("WriteUserList() error = %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), "\n  \"users\": [\n") {
+		t.Fatalf("WriteUserList() output = %q, want indented json", string(data))
+	}
+
+	var decoded UserListResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(decoded.Users) != 1 {
+		t.Fatalf("len(decoded.Users) = %d", len(decoded.Users))
+	}
+	if decoded.Users[0].UUID != users[0].UUID {
+		t.Fatalf("decoded uuid = %q, want %q", decoded.Users[0].UUID, users[0].UUID)
+	}
+	if decoded.Users[0].SpeedLimit != users[0].SpeedLimit {
+		t.Fatalf("decoded speed_limit = %d, want %d", decoded.Users[0].SpeedLimit, users[0].SpeedLimit)
+	}
+	if decoded.Users[0].DeviceLimit != users[0].DeviceLimit {
+		t.Fatalf("decoded device_limit = %d, want %d", decoded.Users[0].DeviceLimit, users[0].DeviceLimit)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("file mode = %#o, want %#o", info.Mode().Perm(), os.FileMode(0600))
+	}
+}
+
+func TestWriteUserListOverwritesExistingFile(t *testing.T) {
+	t.Parallel()
+
+	outputPath := filepath.Join(t.TempDir(), "ppanel-users.json")
+	if err := os.WriteFile(outputPath, []byte("stale"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	users := []ServerUser{{ID: 2, UUID: "user-2", SpeedLimit: 2048, DeviceLimit: 4}}
+	if err := WriteUserList(outputPath, users); err != nil {
+		t.Fatalf("WriteUserList() error = %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(data), "stale") {
+		t.Fatalf("WriteUserList() output = %q, want stale content removed", string(data))
 	}
 }
